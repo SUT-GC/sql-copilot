@@ -1,0 +1,30 @@
+{
+  "name": "db-skill-copilot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "demo": "node demo/server.js",
+    "demo:mysql": "docker compose up -d mysql",
+    "build": "tsc && vite build",
+    "verify:e2e": "node scripts/verify-e2e.mjs",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "express": "^4.21.2",
+    "lucide-react": "^0.468.0",
+    "mysql2": "^3.12.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^6.0.5"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.287",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "playwright": "^1.61.1",
+    "typescript": "^5.7.2"
+  }
+}

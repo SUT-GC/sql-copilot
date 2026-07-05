@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "DB Skill Copilot",
+  "description": "基于 DB Skill 的 SQL 补全、对话写 SQL、历史记录和模板助手。",
+  "version": "0.1.0",
+  "permissions": ["activeTab", "sidePanel", "storage", "tabs"],
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "background": {
+    "service_worker": "assets/background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "DB Skill Copilot"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["assets/content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
