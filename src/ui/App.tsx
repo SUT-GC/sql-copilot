@@ -325,6 +325,7 @@ function CompleteTab({
       });
       setResult(next);
       onGenerated(instruction, next);
+      await onInsert(next.sql, context.selection ? "replace" : "set");
     } catch (err) {
       setError(err instanceof Error ? err.message : "补全失败");
     } finally {
@@ -339,7 +340,7 @@ function CompleteTab({
           <div className="label">当前编辑器</div>
           <div className="muted">{context.detected ? `${context.adapter} · ${context.sql.length} 字符` : "未识别到编辑器"}</div>
         </div>
-        <button className="ghost-button" onClick={onRefreshContext}>
+        <button data-testid="complete-refresh" className="ghost-button" onClick={onRefreshContext}>
           <Search size={15} />
           读取
         </button>
@@ -740,7 +741,12 @@ async function sendRuntime<T>(message: unknown): Promise<T> {
 }
 
 async function sendToActiveTab<T = unknown>(message: unknown): Promise<T> {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const tabs = await chrome.tabs.query({ currentWindow: true });
+  const activeTab = tabs.find((tab) => tab.active);
+  const tab =
+    activeTab?.url?.startsWith("http")
+      ? activeTab
+      : tabs.find((candidate) => candidate.url?.startsWith("http"));
   if (!tab?.id) throw new Error("没有活动标签页");
   return new Promise((resolve, reject) => {
     chrome.tabs.sendMessage(tab.id!, message, (response) => {

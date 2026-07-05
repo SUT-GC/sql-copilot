@@ -126,6 +126,23 @@ async function main() {
     await expectText(sidepanel, "pay_amount", "本地字段补全");
     results.push(["local_completion", true, "pay_amount suggestion"]);
 
+    if (deepseekKey) {
+      await sendContentMessage(worker, {
+        type: "setEditorSql",
+        sql: "select\n  dt,\n  channel,\n  count(distinct user_id) as new_users\nfrom"
+      });
+      await clickTestId(sidepanel, "complete-refresh");
+      await fillTestId(sidepanel, "complete-instruction", "补全成查询 2026-07-01 到 2026-07-04 每个渠道新用户数的完整 MySQL SQL");
+      await clickTestId(sidepanel, "complete-generate");
+      await sidepanel.locator("[data-testid='sql-result']").waitFor({ state: "visible", timeout: 90000 });
+      await sidepanel.waitForTimeout(500);
+      const completedSql = await demo.locator("#sql-editor").inputValue();
+      assert(/dwd_user_register_di/i.test(completedSql) && /group by/i.test(completedSql), "AI 补全没有自动写回 demo SQL 编辑器");
+      results.push(["ai_completion_auto_apply", true, compact(completedSql)]);
+    } else {
+      results.push(["ai_completion_auto_apply", false, "skipped: DEEPSEEK_API_KEY not set"]);
+    }
+
     await clickTestId(sidepanel, "tab-templates");
     await fillTestId(sidepanel, "template-name", "新用户日报");
     await fillTestId(sidepanel, "template-sql", templateSql);
