@@ -226,19 +226,21 @@ export function skillToPrompt(skill: DbSkill | null | undefined, retrievalReason
 export function getSkillSuggestions(skill: DbSkill | null, query: string, database?: string | null): Array<{ label: string; detail: string; insertText: string }> {
   if (!skill) return [];
   const needle = query.trim().toLowerCase();
-  const suggestions: Array<{ label: string; detail: string; insertText: string }> = [];
+  const suggestions: Array<{ label: string; detail: string; insertText: string; kind: "table" | "column" | "metric" }> = [];
 
   for (const table of filterTablesByDatabase(skill.tables, database ?? null)) {
     suggestions.push({
       label: table.name,
       detail: [table.database, table.description].filter(Boolean).join(" · ") || "表",
-      insertText: table.name
+      insertText: table.name,
+      kind: "table"
     });
     for (const column of table.columns ?? []) {
       suggestions.push({
         label: column.name,
         detail: `${table.name}${column.type ? ` · ${column.type}` : ""}${column.description ? ` · ${column.description}` : ""}`,
-        insertText: column.name
+        insertText: column.name,
+        kind: "column"
       });
     }
   }
@@ -247,13 +249,26 @@ export function getSkillSuggestions(skill: DbSkill | null, query: string, databa
     suggestions.push({
       label: metric.name,
       detail: `指标 · ${metric.expression ?? metric.description ?? ""}`,
-      insertText: metric.expression ?? metric.name
+      insertText: metric.expression ?? metric.name,
+      kind: "metric"
     });
   }
 
   return suggestions
     .filter((item) => !needle || `${item.label} ${item.detail}`.toLowerCase().includes(needle))
+    .sort((a, b) => scoreSuggestion(a, needle) - scoreSuggestion(b, needle))
+    .map(({ kind: _kind, ...item }) => item)
     .slice(0, 40);
+}
+
+function scoreSuggestion(item: { label: string; kind: "table" | "column" | "metric" }, needle: string): number {
+  const label = item.label.toLowerCase();
+  let score = item.kind === "table" ? 0 : item.kind === "metric" ? 10 : 20;
+  if (!needle) return score;
+  if (label === needle) score -= 10;
+  else if (label.startsWith(needle)) score -= 6;
+  else if (label.includes(needle)) score -= 3;
+  return score;
 }
 
 export function filterTablesByDatabase(tables: DbTable[], database: string | null): DbTable[] {

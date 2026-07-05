@@ -12,6 +12,8 @@ type CompletionItem = {
   kind: "table" | "column" | "metric" | "keyword";
 };
 
+type CompletionContext = "table" | "expression" | "any";
+
 type CompletionState = {
   element: HTMLTextAreaElement | HTMLInputElement;
   token: string;
@@ -215,12 +217,14 @@ function updateCompletion(element: HTMLTextAreaElement | HTMLInputElement): void
   }
 
   const start = cursor - token.length;
+  const context = inferCompletionContext(beforeCursor.slice(0, start));
   const items = completionItems
+    .filter((item) => isAllowedInContext(item, context))
     .filter((item) => {
       const haystack = `${item.label} ${item.detail} ${item.insertText}`.toLowerCase();
       return haystack.includes(token.toLowerCase());
     })
-    .sort((a, b) => scoreCompletion(a, token) - scoreCompletion(b, token))
+    .sort((a, b) => scoreCompletion(a, token, context) - scoreCompletion(b, token, context))
     .slice(0, 8);
 
   if (!items.length) {
@@ -239,14 +243,45 @@ function updateCompletion(element: HTMLTextAreaElement | HTMLInputElement): void
   renderCompletion();
 }
 
-function scoreCompletion(item: CompletionItem, token: string): number {
+function inferCompletionContext(sqlBeforeToken: string): CompletionContext {
+  const lower = stripQuotedSql(sqlBeforeToken).toLowerCase();
+  const clausePattern =
+    /\b(select|from|join|where|on|group\s+by|order\s+by|having|limit|update|into|delete\s+from|values|set)\b/g;
+  const clauses = Array.from(lower.matchAll(clausePattern));
+  const lastClause = clauses[clauses.length - 1]?.[1]?.replace(/\s+/g, " ");
+
+  if (!lastClause) return "any";
+  if (["from", "join", "update", "into", "delete from"].includes(lastClause)) return "table";
+  if (["select", "where", "on", "having", "group by", "order by", "set"].includes(lastClause)) return "expression";
+
+  return "any";
+}
+
+function stripQuotedSql(sql: string): string {
+  return sql.replace(/'([^']|'')*'/g, " ").replace(/"([^"]|"")*"/g, " ").replace(/`[^`]*`/g, " ");
+}
+
+function isAllowedInContext(item: CompletionItem, context: CompletionContext): boolean {
+  if (context === "table") return item.kind === "table";
+  if (context === "expression") return item.kind !== "table";
+  return true;
+}
+
+function scoreCompletion(item: CompletionItem, token: string, context: CompletionContext): number {
   const label = item.label.toLowerCase();
   const needle = token.toLowerCase();
-  if (label === needle) return 0;
-  if (label.startsWith(needle)) return 1;
-  if (item.kind === "table") return 2;
-  if (item.kind === "column") return 3;
-  return 4;
+  let score = 20;
+  if (label === needle) score -= 12;
+  else if (label.startsWith(needle)) score -= 8;
+  else if (label.includes(needle)) score -= 4;
+
+  if (context === "table" && item.kind === "table") score -= 6;
+  if (context === "expression" && item.kind === "column") score -= 4;
+  if (item.kind === "table") score -= 3;
+  if (item.kind === "column") score -= 2;
+  if (item.kind === "metric") score -= 1;
+
+  return score;
 }
 
 function handleCompletionKeydown(event: KeyboardEvent): void {
