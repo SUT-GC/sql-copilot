@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "DB Skill Copilot",
   "description": "基于 DB Skill 的 SQL 补全、对话写 SQL、历史记录和模板助手。",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "permissions": ["activeTab", "sidePanel", "storage", "tabs", "scripting"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "background": {

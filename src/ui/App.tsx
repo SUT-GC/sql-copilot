@@ -107,12 +107,13 @@ export function App({ initialTab = "ask" }: AppProps) {
           ? `已连接编辑器：${nextContext.adapter}${nextContext.database ? ` · DB: ${nextContext.database}` : ""}`
           : `未识别到 SQL 编辑器${nextContext.database ? ` · DB: ${nextContext.database}` : ""}，可手动复制使用`
       );
-    } catch {
+    } catch (error) {
       const fallback = await getActiveTabContext(scopeRules);
+      const reason = error instanceof Error && error.message ? `：${error.message}` : "";
       setContext(fallback);
       setStatus(
         fallback.url
-          ? `当前页面未响应编辑器读取${fallback.database ? ` · 已识别 DB: ${fallback.database}` : ""}，刷新页面后可继续使用内联补全`
+          ? `当前页面未响应编辑器读取${reason}${fallback.database ? ` · 已识别 DB: ${fallback.database}` : ""}`
           : "当前页面未注入插件脚本，打开 DB 平台页面后再试"
       );
     }
@@ -835,6 +836,9 @@ async function sendMessageToTab<T>(tabId: number, message: unknown): Promise<T> 
 }
 
 async function injectContentScript(tabId: number): Promise<void> {
+  if (!chrome.scripting?.executeScript) {
+    throw new Error("插件权限未生效，请在 chrome://extensions 重新加载插件");
+  }
   await chrome.scripting.executeScript({
     target: { tabId },
     files: ["assets/content.js"]
