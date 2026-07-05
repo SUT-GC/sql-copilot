@@ -34,6 +34,7 @@ import { getSkillSuggestions, parseDbSkill } from "../skill";
 import { createUrlPattern, inferDatabaseFromUrl } from "../scope";
 
 type TabId = "ask" | "complete" | "history" | "templates" | "skill" | "settings";
+type InsertMode = "insert" | "replace" | "selection" | "set";
 
 type AppProps = {
   initialTab?: TabId;
@@ -119,10 +120,10 @@ export function App({ initialTab = "ask" }: AppProps) {
     }
   }
 
-  async function insertSql(sql: string, mode: "insert" | "replace" | "set" = "insert") {
-    const type = mode === "replace" ? "replaceSelection" : mode === "set" ? "setEditorSql" : "insertSql";
+  async function insertSql(sql: string, mode: InsertMode = "insert") {
+    const type = mode === "selection" ? "replaceSelection" : mode === "replace" || mode === "set" ? "setEditorSql" : "insertSql";
     await sendToActiveTab({ type, sql });
-    setStatus(mode === "replace" ? "已替换选中 SQL" : "已插入 SQL");
+    setStatus(mode === "selection" ? "已替换选中 SQL" : mode === "replace" || mode === "set" ? "已替换编辑器 SQL" : "已插入 SQL");
     refreshEditorContext();
   }
 
@@ -299,7 +300,7 @@ function AskTab({
   context: EditorContext;
   activeSkill: DbSkill | null;
   onGenerated: (prompt: string, result: GenerateSqlResponse) => void;
-  onInsert: (sql: string, mode?: "insert" | "replace" | "set") => Promise<void>;
+  onInsert: (sql: string, mode?: InsertMode) => Promise<void>;
 }) {
   const [prompt, setPrompt] = useState("");
   const [result, setResult] = useState<GenerateSqlResponse | null>(null);
@@ -365,7 +366,7 @@ function CompleteTab({
   activeSkill: DbSkill | null;
   onRefreshContext: () => Promise<void>;
   onGenerated: (prompt: string, result: GenerateSqlResponse) => void;
-  onInsert: (sql: string, mode?: "insert" | "replace" | "set") => Promise<void>;
+  onInsert: (sql: string, mode?: InsertMode) => Promise<void>;
 }) {
   const [instruction, setInstruction] = useState("补全这段 SQL");
   const [query, setQuery] = useState("");
@@ -393,7 +394,7 @@ function CompleteTab({
       });
       setResult(next);
       onGenerated(instruction, next);
-      await onInsert(next.sql, context.selection ? "replace" : "set");
+      await onInsert(next.sql, context.selection ? "selection" : "set");
     } catch (err) {
       setError(err instanceof Error ? err.message : "补全失败");
     } finally {
@@ -447,7 +448,7 @@ function SqlResult({
   onInsert
 }: {
   result: GenerateSqlResponse | null;
-  onInsert: (sql: string, mode?: "insert" | "replace" | "set") => Promise<void>;
+  onInsert: (sql: string, mode?: InsertMode) => Promise<void>;
 }) {
   if (!result) return null;
   return (
@@ -478,7 +479,7 @@ function HistoryTab({
 }: {
   history: SqlHistoryItem[];
   onUpdate: (history: SqlHistoryItem[]) => Promise<void>;
-  onInsert: (sql: string, mode?: "insert" | "replace" | "set") => Promise<void>;
+  onInsert: (sql: string, mode?: InsertMode) => Promise<void>;
 }) {
   const [query, setQuery] = useState("");
   const filtered = history.filter((item) => `${item.title} ${item.prompt ?? ""} ${item.sql}`.toLowerCase().includes(query.toLowerCase()));
