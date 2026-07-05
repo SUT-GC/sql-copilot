@@ -810,8 +810,17 @@ async function sendRuntime<T>(message: unknown): Promise<T> {
 async function sendToActiveTab<T = unknown>(message: unknown): Promise<T> {
   const tab = await getActiveHttpTab();
   if (!tab?.id) throw new Error("没有活动标签页");
+  try {
+    return await sendMessageToTab<T>(tab.id, message);
+  } catch (error) {
+    await injectContentScript(tab.id);
+    return sendMessageToTab<T>(tab.id, message);
+  }
+}
+
+async function sendMessageToTab<T>(tabId: number, message: unknown): Promise<T> {
   return new Promise((resolve, reject) => {
-    chrome.tabs.sendMessage(tab.id!, message, (response) => {
+    chrome.tabs.sendMessage(tabId, message, (response) => {
       if (chrome.runtime.lastError) {
         reject(new Error(chrome.runtime.lastError.message));
         return;
@@ -822,6 +831,13 @@ async function sendToActiveTab<T = unknown>(message: unknown): Promise<T> {
       }
       resolve((response.result ?? response) as T);
     });
+  });
+}
+
+async function injectContentScript(tabId: number): Promise<void> {
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ["assets/content.js"]
   });
 }
 

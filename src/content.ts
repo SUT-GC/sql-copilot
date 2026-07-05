@@ -25,6 +25,7 @@ type CompletionState = {
 
 const BUTTON_ID = "db-skill-copilot-button";
 const COMPLETION_ID = "db-skill-copilot-completion";
+const BOOTSTRAP_KEY = "__dbSkillCopilotLoaded";
 const MIN_TOKEN_LENGTH = 1;
 
 let completionState: CompletionState | null = null;
@@ -586,44 +587,51 @@ function ensureButton(): void {
   document.documentElement.appendChild(button);
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type === "getEditorContext") {
-    sendResponse({ ok: true, result: getContext() });
-    return true;
-  }
-  if (message?.type === "insertSql") {
-    sendResponse({ ok: insertAtCursor(message.sql ?? "") });
-    return true;
-  }
-  if (message?.type === "replaceSelection") {
-    sendResponse({ ok: replaceSelection(message.sql ?? "") });
-    return true;
-  }
-  if (message?.type === "setEditorSql") {
-    sendResponse({ ok: setEditorSql(message.sql ?? "") });
-    return true;
-  }
-  return false;
-});
+function registerMessageListener(): void {
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type === "getEditorContext") {
+      sendResponse({ ok: true, result: getContext() });
+      return true;
+    }
+    if (message?.type === "insertSql") {
+      sendResponse({ ok: insertAtCursor(message.sql ?? "") });
+      return true;
+    }
+    if (message?.type === "replaceSelection") {
+      sendResponse({ ok: replaceSelection(message.sql ?? "") });
+      return true;
+    }
+    if (message?.type === "setEditorSql") {
+      sendResponse({ ok: setEditorSql(message.sql ?? "") });
+      return true;
+    }
+    return false;
+  });
+}
 
-ensureButton();
-loadCompletionItems().catch(() => undefined);
+if (!(globalThis as Record<string, unknown>)[BOOTSTRAP_KEY]) {
+  (globalThis as Record<string, unknown>)[BOOTSTRAP_KEY] = true;
 
-chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName === "local" && (changes.skills || changes.activeSkillId || changes.urlScopeRules)) {
-    loadCompletionItems().catch(() => undefined);
-  }
-});
+  ensureButton();
+  registerMessageListener();
+  loadCompletionItems().catch(() => undefined);
 
-document.addEventListener("input", handleEditorInput, true);
-document.addEventListener("keyup", (event) => {
-  if (event.key.length === 1 && isTextControl(event.target as HTMLElement)) {
-    updateCompletion(event.target as HTMLTextAreaElement | HTMLInputElement);
-  }
-}, true);
-document.addEventListener("keydown", handleCompletionKeydown, true);
-document.addEventListener("click", (event) => {
-  const target = event.target as HTMLElement | null;
-  if (!target?.closest(`#${COMPLETION_ID}`) && !isTextControl(target as HTMLElement)) hideCompletion();
-}, true);
-document.addEventListener("scroll", hideCompletion, true);
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName === "local" && (changes.skills || changes.activeSkillId || changes.urlScopeRules)) {
+      loadCompletionItems().catch(() => undefined);
+    }
+  });
+
+  document.addEventListener("input", handleEditorInput, true);
+  document.addEventListener("keyup", (event) => {
+    if (event.key.length === 1 && isTextControl(event.target as HTMLElement)) {
+      updateCompletion(event.target as HTMLTextAreaElement | HTMLInputElement);
+    }
+  }, true);
+  document.addEventListener("keydown", handleCompletionKeydown, true);
+  document.addEventListener("click", (event) => {
+    const target = event.target as HTMLElement | null;
+    if (!target?.closest(`#${COMPLETION_ID}`) && !isTextControl(target as HTMLElement)) hideCompletion();
+  }, true);
+  document.addEventListener("scroll", hideCompletion, true);
+}
