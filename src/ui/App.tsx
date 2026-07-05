@@ -26,10 +26,12 @@ import type {
   SqlHistoryItem,
   SqlTemplate,
   TemplateVariable,
-  TemplateVariableType
+  TemplateVariableType,
+  UrlScopeRule
 } from "../types";
-import { createId, getStore, saveHistory, saveModelConfig, saveSkills, saveTemplates } from "../storage";
+import { createId, getStore, saveHistory, saveModelConfig, saveSkills, saveTemplates, saveUrlScopeRules } from "../storage";
 import { getSkillSuggestions, parseDbSkill } from "../skill";
+import { createUrlPattern } from "../scope";
 
 type TabId = "ask" | "complete" | "history" | "templates" | "skill" | "settings";
 
@@ -43,7 +45,8 @@ const EMPTY_CONTEXT: EditorContext = {
   sql: "",
   selection: "",
   url: "",
-  title: ""
+  title: "",
+  database: null
 };
 
 const VARIABLE_TYPES: TemplateVariableType[] = [
@@ -70,6 +73,7 @@ export function App({ initialTab = "ask" }: AppProps) {
   });
   const [skills, setSkills] = useState<DbSkill[]>([]);
   const [activeSkillId, setActiveSkillId] = useState<string | null>(null);
+  const [urlScopeRules, setUrlScopeRules] = useState<UrlScopeRule[]>([]);
   const [history, setHistory] = useState<SqlHistoryItem[]>([]);
   const [templates, setTemplates] = useState<SqlTemplate[]>([]);
   const [context, setContext] = useState<EditorContext>(EMPTY_CONTEXT);
@@ -85,6 +89,7 @@ export function App({ initialTab = "ask" }: AppProps) {
       setConfig(store.modelConfig);
       setSkills(store.skills);
       setActiveSkillId(store.activeSkillId);
+      setUrlScopeRules(store.urlScopeRules);
       setHistory(store.history);
       setTemplates(store.templates);
     });
@@ -95,7 +100,7 @@ export function App({ initialTab = "ask" }: AppProps) {
     try {
       const result = await sendToActiveTab<EditorContext>({ type: "getEditorContext" });
       setContext(result);
-      setStatus(result.detected ? `已连接编辑器：${result.adapter}` : "未识别到 SQL 编辑器，可手动复制使用");
+      setStatus(result.detected ? `已连接编辑器：${result.adapter}${result.database ? ` · DB: ${result.database}` : ""}` : "未识别到 SQL 编辑器，可手动复制使用");
     } catch {
       setContext(EMPTY_CONTEXT);
       setStatus("当前页面未注入插件脚本，打开 DB 平台页面后再试");
@@ -138,6 +143,22 @@ export function App({ initialTab = "ask" }: AppProps) {
     await saveSkills(next, nextActiveSkillId);
   }
 
+  async function saveCurrentDatabase(database: string) {
+    if (!context.url || !database.trim()) return;
+    const pattern = createUrlPattern(context.url);
+    const nextRule: UrlScopeRule = {
+      id: createId("scope"),
+      urlPattern: pattern,
+      database: database.trim(),
+      createdAt: new Date().toISOString()
+    };
+    const next = [nextRule, ...urlScopeRules.filter((rule) => rule.urlPattern !== pattern)];
+    setUrlScopeRules(next);
+    setContext({ ...context, database: database.trim() });
+    await saveUrlScopeRules(next);
+    setStatus(`已保存当前 URL scope：${database.trim()}`);
+  }
+
   const tabs: Array<{ id: TabId; label: string; icon: JSX.Element }> = [
     { id: "ask", label: "Ask", icon: <Bot size={16} /> },
     { id: "complete", label: "Complete", icon: <Wand2 size={16} /> },
@@ -171,6 +192,7 @@ export function App({ initialTab = "ask" }: AppProps) {
       </nav>
 
       <main className="content">
+        <ScopeBar context={context} onSaveDatabase={saveCurrentDatabase} />
         {tab === "ask" && (
           <AskTab
             config={config}
@@ -224,6 +246,36 @@ export function App({ initialTab = "ask" }: AppProps) {
   );
 }
 
+function ScopeBar({ context, onSaveDatabase }: { context: EditorContext; onSaveDatabase: (database: string) => Promise<void> }) {
+  const [database, setDatabase] = useState(context.database ?? "");
+
+  useEffect(() => {
+    setDatabase(context.database ?? "");
+  }, [context.database, context.url]);
+
+  return (
+    <section className="scope-bar">
+      <div>
+        <div className="label">当前 DB</div>
+        <div className="muted">{context.url ? context.url.replace(/^https?:\/\//, "").slice(0, 72) : "未连接页面"}</div>
+      </div>
+      <div className="scope-actions">
+        <input
+          data-testid="scope-database"
+          className="input"
+          value={database}
+          onChange={(event) => setDatabase(event.target.value)}
+          placeholder="识别不到时填 DB 名"
+        />
+        <button data-testid="scope-save" className="ghost-button" onClick={() => onSaveDatabase(database)} disabled={!database.trim() || !context.url}>
+          <Save size={14} />
+          保存
+        </button>
+      </div>
+    </section>
+  );
+}
+
 function AskTab({
   config,
   context,
@@ -253,6 +305,8 @@ function AskTab({
           prompt,
           currentSql: context.sql,
           selection: context.selection,
+          url: context.url,
+          database: context.database,
           skill: activeSkill,
           config
         }
@@ -306,7 +360,7 @@ function CompleteTab({
   const [result, setResult] = useState<GenerateSqlResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const suggestions = useMemo(() => getSkillSuggestions(activeSkill, query), [activeSkill, query]);
+  const suggestions = useMemo(() => getSkillSuggestions(activeSkill, query, context.database), [activeSkill, query, context.database]);
 
   async function generate() {
     setLoading(true);
@@ -319,6 +373,8 @@ function CompleteTab({
           prompt: instruction,
           currentSql: context.sql,
           selection: context.selection,
+          url: context.url,
+          database: context.database,
           skill: activeSkill,
           config
         }

@@ -22,8 +22,20 @@ export type DbColumn = {
 };
 
 export type DbTable = {
+  database?: string;
+  schema?: string;
   name: string;
   description?: string;
+  business?: string;
+  grain?: string;
+  refresh?: string;
+  owner?: string;
+  relatedTables?: Array<{
+    table: string;
+    relation?: string;
+    type?: string;
+    description?: string;
+  }>;
   columns?: DbColumn[];
   partitions?: string[];
 };
@@ -102,6 +114,14 @@ export type EditorContext = {
   selection: string;
   url: string;
   title: string;
+  database?: string | null;
+};
+
+export type UrlScopeRule = {
+  id: string;
+  urlPattern: string;
+  database: string;
+  createdAt: string;
 };
 
 export type GenerateSqlRequest = {
@@ -109,6 +129,8 @@ export type GenerateSqlRequest = {
   prompt: string;
   currentSql?: string;
   selection?: string;
+  url?: string;
+  database?: string | null;
   skill?: DbSkill | null;
   config: ModelConfig;
 };

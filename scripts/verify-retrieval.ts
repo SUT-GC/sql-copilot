@@ -1,5 +1,6 @@
 import type { DbSkill } from "../src/types";
 import { retrieveRelevantSkill, skillToPrompt } from "../src/skill";
+import { inferDatabaseFromUrl } from "../src/scope";
 
 const skill: DbSkill = {
   id: "skill_test",
@@ -8,6 +9,7 @@ const skill: DbSkill = {
   updatedAt: new Date().toISOString(),
   tables: [
     {
+      database: "life_opact",
       name: "orders",
       description: "订单表",
       columns: [
@@ -16,11 +18,13 @@ const skill: DbSkill = {
       ]
     },
     {
+      database: "life_opact",
       name: "users",
       description: "用户表",
       columns: [{ name: "user_id", type: "bigint", description: "用户 ID" }]
     },
     {
+      database: "other_db",
       name: "events",
       description: "事件表",
       columns: [{ name: "event_name", type: "varchar", description: "事件名" }]
@@ -36,9 +40,13 @@ const skill: DbSkill = {
   ]
 };
 
+const inferredDb = inferDatabaseFromUrl("https://cloud.bytedance.net/rds/detail/db/global/life_opact/autoSQL");
+assertEqual(inferredDb, "life_opact", "ByteDance RDS URL database inference");
+
 const explicit = retrieveRelevantSkill(skill, {
   currentSql: "select pay_amount from orders where",
-  prompt: "补全这个 SQL"
+  prompt: "补全这个 SQL",
+  database: "life_opact"
 });
 assertEqual(explicit.skill?.tables.map((table) => table.name).join(","), "orders", "explicit table retrieval");
 assertEqual(explicit.skill?.joins.length, 0, "explicit table should not pull unrelated join tables");
@@ -48,10 +56,12 @@ assert(!explicitPrompt.includes("### users"), "explicit prompt should not includ
 
 const fuzzy = retrieveRelevantSkill(skill, {
   prompt: "查询支付金额和 GMV",
-  currentSql: ""
+  currentSql: "",
+  database: "life_opact"
 });
 assert(fuzzy.skill?.tables.some((table) => table.name === "orders"), "fuzzy retrieval should include orders");
 assert((fuzzy.skill?.tables.length ?? 0) < skill.tables.length, "fuzzy retrieval should reduce table count when possible");
+assert(!fuzzy.skill?.tables.some((table) => table.database === "other_db"), "database scope should exclude other_db tables");
 
 console.log("retrieval checks passed");
 

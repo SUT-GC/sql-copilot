@@ -97,6 +97,22 @@ button {
   gap: 12px;
 }
 
+.scope-bar {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 10px;
+  border: 1px solid #e1e5ee;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.scope-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
 .split {
   gap: 16px;
 }

@@ -1,4 +1,4 @@
-import type { DbSkill, ModelConfig, SqlHistoryItem, SqlTemplate } from "./types";
+import type { DbSkill, ModelConfig, SqlHistoryItem, SqlTemplate, UrlScopeRule } from "./types";
 
 const DEFAULT_CONFIG: ModelConfig = {
   baseUrl: "https://api.deepseek.com",
@@ -12,6 +12,7 @@ type StoreShape = {
   modelConfig: ModelConfig;
   skills: DbSkill[];
   activeSkillId: string | null;
+  urlScopeRules: UrlScopeRule[];
   history: SqlHistoryItem[];
   templates: SqlTemplate[];
 };
@@ -20,6 +21,7 @@ const DEFAULT_STORE: StoreShape = {
   modelConfig: DEFAULT_CONFIG,
   skills: [],
   activeSkillId: null,
+  urlScopeRules: [],
   history: [],
   templates: []
 };
@@ -30,6 +32,7 @@ export async function getStore(): Promise<StoreShape> {
     modelConfig: { ...DEFAULT_CONFIG, ...data.modelConfig },
     skills: data.skills ?? [],
     activeSkillId: data.activeSkillId ?? null,
+    urlScopeRules: data.urlScopeRules ?? [],
     history: data.history ?? [],
     templates: data.templates ?? []
   };
@@ -41,6 +44,10 @@ export async function saveModelConfig(modelConfig: ModelConfig): Promise<void> {
 
 export async function saveSkills(skills: DbSkill[], activeSkillId: string | null): Promise<void> {
   await chrome.storage.local.set({ skills, activeSkillId });
+}
+
+export async function saveUrlScopeRules(urlScopeRules: UrlScopeRule[]): Promise<void> {
+  await chrome.storage.local.set({ urlScopeRules });
 }
 
 export async function saveHistory(history: SqlHistoryItem[]): Promise<void> {

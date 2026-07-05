@@ -1,4 +1,4 @@
-import type { DbSkill, EditorContext } from "./types";
+import type { DbSkill, EditorContext, UrlScopeRule } from "./types";
 
 type EditorTarget = {
   element: HTMLElement;
@@ -27,6 +27,7 @@ const MIN_TOKEN_LENGTH = 1;
 
 let completionState: CompletionState | null = null;
 let completionItems: CompletionItem[] = [];
+let currentDatabase: string | null = null;
 
 function findEditor(): EditorTarget | null {
   const active = document.activeElement as HTMLElement | null;
@@ -135,13 +136,15 @@ function dispatchInput(element: HTMLElement): void {
 }
 
 async function loadCompletionItems(): Promise<void> {
-  const data = await chrome.storage.local.get(["skills", "activeSkillId"]);
+  const data = await chrome.storage.local.get(["skills", "activeSkillId", "urlScopeRules"]);
   const skills = (data.skills ?? []) as DbSkill[];
+  const urlScopeRules = (data.urlScopeRules ?? []) as UrlScopeRule[];
+  currentDatabase = inferDatabaseFromUrlForPage(location.href, urlScopeRules);
   const activeSkill = skills.find((skill) => skill.id === data.activeSkillId) ?? skills[0] ?? null;
-  completionItems = buildCompletionItems(activeSkill);
+  completionItems = buildCompletionItems(activeSkill, currentDatabase);
 }
 
-function buildCompletionItems(skill: DbSkill | null): CompletionItem[] {
+function buildCompletionItems(skill: DbSkill | null, database: string | null): CompletionItem[] {
   const keywords: CompletionItem[] = [
     "select",
     "from",
@@ -158,10 +161,10 @@ function buildCompletionItems(skill: DbSkill | null): CompletionItem[] {
   if (!skill) return keywords;
 
   const items: CompletionItem[] = [...keywords];
-  for (const table of skill.tables) {
+  for (const table of filterTablesByDatabase(skill.tables, database)) {
     items.push({
       label: table.name,
-      detail: table.description ? `表 · ${table.description}` : "表",
+      detail: [table.database, table.description || table.business].filter(Boolean).join(" · ") || "表",
       insertText: table.name,
       kind: "table"
     });
@@ -428,8 +431,55 @@ function getContext(): EditorContext {
     sql: getSql(target),
     selection: getSelectionText(target),
     url: location.href,
-    title: document.title
+    title: document.title,
+    database: currentDatabase ?? inferDatabaseFromUrlForPage(location.href)
   };
+}
+
+function filterTablesByDatabase(tables: DbSkill["tables"], database: string | null): DbSkill["tables"] {
+  if (!database) return tables;
+  const normalized = normalizeName(database);
+  return tables.filter((table) => !table.database || normalizeName(table.database) === normalized);
+}
+
+function normalizeName(value: string): string {
+  return value.toLowerCase().trim();
+}
+
+function inferDatabaseFromUrlForPage(url: string, rules: UrlScopeRule[] = []): string | null {
+  for (const rule of rules) {
+    if (matchesPattern(url, rule.urlPattern)) return rule.database;
+  }
+
+  const parsed = safeUrl(url);
+  if (!parsed) return null;
+  const rdsMatch = parsed.pathname.match(/\/rds\/detail\/db\/[^/]+\/([^/]+)(?:\/|$)/i);
+  if (rdsMatch) return decodeURIComponent(rdsMatch[1]);
+  const dbPathMatch = parsed.pathname.match(/\/(?:db|database|schema)\/([^/]+)(?:\/|$)/i);
+  if (dbPathMatch) return decodeURIComponent(dbPathMatch[1]);
+  for (const key of ["db", "database", "schema"]) {
+    const value = parsed.searchParams.get(key);
+    if (value) return value;
+  }
+  return null;
+}
+
+function matchesPattern(url: string, pattern: string): boolean {
+  if (!pattern.trim()) return false;
+  const escaped = pattern.split("*").map(escapeRegExp).join(".*");
+  return new RegExp(`^${escaped}$`, "i").test(url);
+}
+
+function safeUrl(url: string): URL | null {
+  try {
+    return new URL(url);
+  } catch {
+    return null;
+  }
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function ensureButton(): void {
@@ -486,7 +536,7 @@ ensureButton();
 loadCompletionItems().catch(() => undefined);
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName === "local" && (changes.skills || changes.activeSkillId)) {
+  if (areaName === "local" && (changes.skills || changes.activeSkillId || changes.urlScopeRules)) {
     loadCompletionItems().catch(() => undefined);
   }
 });

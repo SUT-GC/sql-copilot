@@ -59,7 +59,8 @@ function buildUserPrompt(request: GenerateSqlRequest): string {
   const retrieval = retrieveRelevantSkill(request.skill, {
     prompt: request.prompt,
     currentSql: request.currentSql,
-    selection: request.selection
+    selection: request.selection,
+    database: request.database
   });
   const skill = skillToPrompt(retrieval.skill, retrieval.reason);
   if (request.mode === "complete") {
@@ -72,6 +73,9 @@ function buildUserPrompt(request: GenerateSqlRequest): string {
       "",
       "## 当前 SQL",
       request.currentSql || "(空)",
+      "",
+      "## 当前页面 DB",
+      request.database || "(未知)",
       "",
       "## 当前选中内容",
       request.selection || "(无)",
@@ -89,6 +93,9 @@ function buildUserPrompt(request: GenerateSqlRequest): string {
     "",
     "## 当前 SQL",
     request.currentSql || "(空)",
+    "",
+    "## 当前页面 DB",
+    request.database || "(未知)",
     "",
     "## 用户需求",
     request.prompt

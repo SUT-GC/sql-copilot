@@ -60,6 +60,8 @@ Ask 和 Complete 在调用模型前会先裁剪 DB Skill：
 
 - 如果当前 SQL 里已经出现 `from 表名` 或 `join 表名`，只把这些显式表传给模型，不再检索其他表。
 - 如果当前 SQL 还没有表名，会根据用户问题、当前 SQL、字段说明、指标说明检索相关表。
+- 如果页面 URL 能识别出当前 DB，例如 `https://cloud.bytedance.net/rds/detail/db/global/life_opact/autoSQL`，会先过滤到 `life_opact`。
+- 如果 URL 识别不到，可以在侧边栏顶部手动填 DB 名并保存 URL pattern，下次同类 URL 会自动使用。
 - 传给模型的上下文只包含检索后的 tables、joins、metrics，不会把原始大 JSON 全量塞进 prompt。
 - 页面内联想补全仍然使用当前激活 Skill 的本地索引，保证输入表名/字段名时响应足够快。
 
@@ -106,22 +108,54 @@ Ask 和 Complete 在调用模型前会先裁剪 DB Skill：
 
 ```json
 {
-  "dialect": "hive",
+  "name": "life_opact_skill",
+  "dialect": "mysql",
   "tables": [
     {
-      "name": "dwd_order_detail_di",
-      "description": "订单明细日表",
+      "database": "life_opact",
+      "name": "opact_project",
+      "description": "营销项目主表",
+      "business": "记录营销项目的基础信息、状态、负责人和时间范围，用于项目查询、预算评估和活动分析。",
+      "grain": "一行代表一个营销项目",
+      "refresh": "实时或准实时",
+      "owner": "marketing platform",
+      "relatedTables": [
+        {
+          "table": "opact_project_budget",
+          "relation": "opact_project.project_id = opact_project_budget.project_id",
+          "type": "left join",
+          "description": "关联项目预算配置"
+        }
+      ],
       "columns": [
-        { "name": "user_id", "type": "bigint", "description": "用户 ID" },
-        { "name": "pay_amount", "type": "decimal", "description": "支付金额" }
+        { "name": "project_id", "type": "bigint", "description": "项目 ID" },
+        { "name": "project_name", "type": "varchar", "description": "项目名称" },
+        { "name": "status", "type": "varchar", "description": "项目状态" },
+        { "name": "create_time", "type": "datetime", "description": "创建时间" }
       ]
+    },
+    {
+      "database": "other_db",
+      "name": "other_table",
+      "description": "其他库的表，在 life_opact 页面下不会优先参与补全和模型上下文。",
+      "columns": [
+        { "name": "id", "type": "bigint", "description": "ID" }
+      ]
+    }
+  ],
+  "joins": [
+    {
+      "left": "opact_project.project_id",
+      "right": "opact_project_budget.project_id",
+      "type": "left join",
+      "description": "项目关联预算表"
     }
   ],
   "metrics": [
     {
-      "name": "GMV",
-      "expression": "sum(pay_amount)",
-      "filters": "pay_status = 'SUCCESS'"
+      "name": "项目数",
+      "expression": "count(distinct project_id)",
+      "description": "去重项目数量"
     }
   ]
 }

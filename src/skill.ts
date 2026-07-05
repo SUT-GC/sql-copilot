@@ -135,33 +135,36 @@ function stripTicks(value: string): string {
 
 export function retrieveRelevantSkill(
   skill: DbSkill | null | undefined,
-  input: { prompt?: string; currentSql?: string; selection?: string }
+  input: { prompt?: string; currentSql?: string; selection?: string; database?: string | null }
 ): { skill: DbSkill | null; reason: string } {
   if (!skill) return { skill: null, reason: "未提供 DB Skill" };
+  const scopedTables = filterTablesByDatabase(skill.tables, input.database ?? null);
+  const scopedSkill = { ...skill, tables: scopedTables };
+  const databaseReason = input.database ? `当前页面 DB：${input.database}，已先过滤到该 DB 范围。` : "";
 
-  const explicitTableNames = extractExplicitTables(input.currentSql ?? "", skill);
+  const explicitTableNames = extractExplicitTables(input.currentSql ?? "", scopedSkill);
   if (explicitTableNames.size > 0) {
-    const tables = skill.tables.filter((table) => explicitTableNames.has(normalizeName(table.name)));
+    const tables = scopedSkill.tables.filter((table) => explicitTableNames.has(normalizeName(table.name)));
     return {
       skill: cloneSkillSubset(skill, tables, filterJoins(skill.joins, tables, "both"), filterMetrics(skill.metrics, tables, input)),
-      reason: `当前 SQL 已显式输入表：${tables.map((table) => table.name).join(", ")}，仅使用这些表做上下文。`
+      reason: `${databaseReason}当前 SQL 已显式输入表：${tables.map((table) => table.name).join(", ")}，仅使用这些表做上下文。`
     };
   }
 
   const searchText = [input.prompt, input.currentSql, input.selection].filter(Boolean).join("\n");
-  const scoredTables = skill.tables
+  const scoredTables = scopedSkill.tables
     .map((table) => ({ table, score: scoreTable(table, searchText) }))
     .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, MAX_RETRIEVED_TABLES)
     .map((item) => item.table);
 
-  const tables = scoredTables.length ? scoredTables : skill.tables.slice(0, Math.min(skill.tables.length, 8));
+  const tables = scoredTables.length ? scoredTables : scopedSkill.tables.slice(0, Math.min(scopedSkill.tables.length, 8));
   return {
     skill: cloneSkillSubset(skill, tables, filterJoins(skill.joins, tables, "any"), filterMetrics(skill.metrics, tables, input)),
     reason: scoredTables.length
-      ? `按用户输入检索出相关表：${tables.map((table) => table.name).join(", ")}。`
-      : `没有明显表匹配，使用前 ${tables.length} 张表作为候选上下文。`
+      ? `${databaseReason}按用户输入检索出相关表：${tables.map((table) => table.name).join(", ")}。`
+      : `${databaseReason}没有明显表匹配，使用前 ${tables.length} 张表作为候选上下文。`
   };
 }
 
@@ -169,10 +172,24 @@ export function skillToPrompt(skill: DbSkill | null | undefined, retrievalReason
   if (!skill) return "未提供 DB Skill。缺少表字段信息时必须向用户说明，不要编造字段。";
   const tables = skill.tables
     .map((table) => {
+      const relatedTables = (table.relatedTables ?? [])
+        .map((related) => `  - ${related.table}${related.relation ? `: ${related.relation}` : ""}${related.description ? `，${related.description}` : ""}`)
+        .join("\n");
       const columns = (table.columns ?? [])
         .map((column) => `  - ${column.name}${column.type ? ` (${column.type})` : ""}: ${column.description ?? ""}`)
         .join("\n");
-      return `### ${table.name}\n${table.description ?? ""}\n${columns}`;
+      return [
+        `### ${formatTableName(table)}`,
+        table.description ?? "",
+        table.business ? `业务含义：${table.business}` : "",
+        table.grain ? `数据粒度：${table.grain}` : "",
+        table.refresh ? `刷新频率：${table.refresh}` : "",
+        table.owner ? `负责人：${table.owner}` : "",
+        relatedTables ? `关联表：\n${relatedTables}` : "",
+        columns
+      ]
+        .filter(Boolean)
+        .join("\n");
     })
     .join("\n\n");
   const metrics = skill.metrics
@@ -194,15 +211,15 @@ export function skillToPrompt(skill: DbSkill | null | undefined, retrievalReason
     .join("\n");
 }
 
-export function getSkillSuggestions(skill: DbSkill | null, query: string): Array<{ label: string; detail: string; insertText: string }> {
+export function getSkillSuggestions(skill: DbSkill | null, query: string, database?: string | null): Array<{ label: string; detail: string; insertText: string }> {
   if (!skill) return [];
   const needle = query.trim().toLowerCase();
   const suggestions: Array<{ label: string; detail: string; insertText: string }> = [];
 
-  for (const table of skill.tables) {
+  for (const table of filterTablesByDatabase(skill.tables, database ?? null)) {
     suggestions.push({
       label: table.name,
-      detail: table.description ? `表 · ${table.description}` : "表",
+      detail: [table.database, table.description].filter(Boolean).join(" · ") || "表",
       insertText: table.name
     });
     for (const column of table.columns ?? []) {
@@ -225,6 +242,12 @@ export function getSkillSuggestions(skill: DbSkill | null, query: string): Array
   return suggestions
     .filter((item) => !needle || `${item.label} ${item.detail}`.toLowerCase().includes(needle))
     .slice(0, 40);
+}
+
+export function filterTablesByDatabase(tables: DbTable[], database: string | null): DbTable[] {
+  if (!database) return tables;
+  const normalized = normalizeName(database);
+  return tables.filter((table) => !table.database || normalizeName(table.database) === normalized);
 }
 
 function extractExplicitTables(sql: string, skill: DbSkill): Set<string> {
@@ -296,7 +319,11 @@ function scoreTable(table: DbTable, searchText: string): number {
   const lowerSearchText = searchText.toLowerCase();
   const haystack = [
     table.name,
+    table.database,
+    table.schema,
     table.description,
+    table.business,
+    table.grain,
     ...(table.columns ?? []).flatMap((column) => [column.name, column.type, column.description])
   ]
     .filter(Boolean)
@@ -318,6 +345,10 @@ function scoreTable(table: DbTable, searchText: string): number {
     }
   }
   return score;
+}
+
+function formatTableName(table: DbTable): string {
+  return [table.database, table.schema, table.name].filter(Boolean).join(".");
 }
 
 function scoreMetric(metric: DbMetric, searchText: string, tableTerms: Set<string>): number {
