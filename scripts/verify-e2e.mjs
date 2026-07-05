@@ -8,32 +8,57 @@ const distDir = path.join(root, "dist");
 const userDataDir = path.join(os.tmpdir(), "db-skill-copilot-e2e-profile");
 const deepseekKey = process.env.DEEPSEEK_API_KEY ?? "";
 
-const skill = `# DB Skill: demo_analytics
-
-## Tables
-
-### dwd_user_register_di
-用户注册日表。
-- user_id (bigint): 用户 ID
-- dt (date): 分区日期
-- channel (varchar): 注册渠道
-- country (varchar): 国家
-
-### dwd_order_detail_di
-订单明细日表。
-- order_id (bigint): 订单 ID
-- user_id (bigint): 用户 ID
-- pay_amount (decimal): 支付金额，单位元
-- pay_status (varchar): 支付状态，SUCCESS 表示支付成功
-- dt (date): 分区日期
-
-## Relationships
-- dwd_order_detail_di.user_id = dwd_user_register_di.user_id
-
-## Metrics
-- GMV: sum(pay_amount)，只统计 pay_status = 'SUCCESS'
-- 新用户数: count(distinct user_id)
-`;
+const skillJson = JSON.stringify(
+  {
+    name: "demo_analytics",
+    dialect: "mysql",
+    tables: [
+      {
+        database: "demo_db",
+        name: "dwd_user_register_di",
+        description: "用户注册日表",
+        business: "用于分析新用户注册、渠道归因和地区分布。",
+        columns: [
+          { name: "user_id", type: "bigint", description: "用户 ID" },
+          { name: "dt", type: "date", description: "分区日期" },
+          { name: "channel", type: "varchar", description: "注册渠道" },
+          { name: "country", type: "varchar", description: "国家" }
+        ]
+      },
+      {
+        database: "demo_db",
+        name: "dwd_order_detail_di",
+        description: "订单明细日表",
+        business: "用于分析支付订单、GMV 和用户购买行为。",
+        columns: [
+          { name: "order_id", type: "bigint", description: "订单 ID" },
+          { name: "user_id", type: "bigint", description: "用户 ID" },
+          { name: "pay_amount", type: "decimal", description: "支付金额，单位元" },
+          { name: "pay_status", type: "varchar", description: "支付状态，SUCCESS 表示支付成功" },
+          { name: "dt", type: "date", description: "分区日期" }
+        ]
+      }
+    ],
+    joins: [
+      {
+        left: "dwd_order_detail_di.user_id",
+        right: "dwd_user_register_di.user_id",
+        type: "left join",
+        description: "订单明细关联注册用户"
+      }
+    ],
+    metrics: [
+      {
+        name: "GMV",
+        expression: "sum(pay_amount)",
+        filters: "pay_status = 'SUCCESS'",
+        description: "支付成功订单金额"
+      }
+    ]
+  },
+  null,
+  2
+);
 
 const templateSql = `select
   dt,
@@ -80,30 +105,6 @@ async function main() {
     const extensionId = worker.url().split("/")[2];
     results.push(["extension_loaded", Boolean(extensionId), extensionId]);
 
-    await demo.locator("#sql-editor").click();
-    await sendContentMessage(worker, { type: "insertSql", sql: "\nselect 42 as inserted_by_copilot;" });
-    const insertedSql = await demo.locator("#sql-editor").inputValue();
-    assert(insertedSql.includes("inserted_by_copilot"), "content script 插入 SQL 失败");
-    results.push(["editor_insert", true, "insertAtCursor"]);
-
-    await sendContentMessage(worker, { type: "setEditorSql", sql: "select 1 as old_value;" });
-    await demo.evaluate(() => {
-      const editor = document.querySelector("#sql-editor");
-      editor.focus();
-      const start = editor.value.indexOf("old_value");
-      editor.setSelectionRange(start, start + "old_value".length);
-    });
-    await sendContentMessage(worker, { type: "replaceSelection", sql: "new_value" });
-    const replacedSql = await demo.locator("#sql-editor").inputValue();
-    assert(replacedSql.includes("new_value") && !replacedSql.includes("old_value"), "content script 替换选区失败");
-    results.push(["editor_replace", true, "replaceSelection"]);
-
-    await sendContentMessage(worker, { type: "setEditorSql", sql: templateSql });
-    await demo.locator("#run").click();
-    await demo.waitForFunction(() => document.querySelectorAll("tbody tr").length > 0, null, { timeout: 10000 });
-    const rowCount = await demo.locator("tbody tr").count();
-    results.push(["demo_mysql_query", rowCount > 0, `${rowCount} rows`]);
-
     const sidepanel = await context.newPage();
     await sidepanel.goto(`chrome-extension://${extensionId}/sidepanel.html`, { waitUntil: "domcontentloaded" });
 
@@ -116,39 +117,20 @@ async function main() {
 
     await clickTestId(sidepanel, "tab-skill");
     await fillTestId(sidepanel, "skill-name", "demo_analytics");
-    await fillTestId(sidepanel, "skill-raw", skill);
+    await fillTestId(sidepanel, "skill-raw", skillJson);
     await clickTestId(sidepanel, "skill-import");
     await expectText(sidepanel, "demo_analytics", "DB Skill 导入");
+    await expectText(sidepanel, "2 tables", "DB Skill table count");
     results.push(["skill_imported", true, "demo_analytics"]);
 
-    await clickTestId(sidepanel, "tab-complete");
-    await fillTestId(sidepanel, "suggestion-query", "pay_amount");
-    await expectText(sidepanel, "pay_amount", "本地字段补全");
-    results.push(["local_completion", true, "pay_amount suggestion"]);
-
-    await demo.locator("#sql-editor").fill("select pay_a");
-    await demo.locator("#db-skill-copilot-completion").waitFor({ state: "visible", timeout: 10000 });
-    await demo.locator("#sql-editor").press("Tab");
-    const inlineCompletedSql = await demo.locator("#sql-editor").inputValue();
-    assert(inlineCompletedSql.includes("pay_amount"), "页面内联想补全没有把 pay_a 补成 pay_amount");
-    results.push(["inline_autocomplete", true, "pay_a -> pay_amount"]);
-
-    if (deepseekKey) {
-      await sendContentMessage(worker, {
-        type: "setEditorSql",
-        sql: "select\n  dt,\n  channel,\n  count(distinct user_id) as new_users\nfrom"
-      });
-      await clickTestId(sidepanel, "complete-refresh");
-      await fillTestId(sidepanel, "complete-instruction", "补全成查询 2026-07-01 到 2026-07-04 每个渠道新用户数的完整 MySQL SQL");
-      await clickTestId(sidepanel, "complete-generate");
-      await sidepanel.locator("[data-testid='sql-result']").waitFor({ state: "visible", timeout: 90000 });
-      await sidepanel.waitForTimeout(500);
-      const completedSql = await demo.locator("#sql-editor").inputValue();
-      assert(/dwd_user_register_di/i.test(completedSql) && /group by/i.test(completedSql), "AI 补全没有自动写回 demo SQL 编辑器");
-      results.push(["ai_completion_auto_apply", true, compact(completedSql)]);
-    } else {
-      results.push(["ai_completion_auto_apply", false, "skipped: DEEPSEEK_API_KEY not set"]);
-    }
+    await clickTestId(sidepanel, "tab-write");
+    await selectTestId(sidepanel, "workspace-database", "demo_db");
+    await fillTestId(sidepanel, "workspace-sql", "select * from dwd_ord");
+    await expectText(sidepanel, "dwd_order_detail_di", "工作台表名联想");
+    await sidepanel.locator('[data-testid="workspace-sql"]').press("Tab");
+    const completedSql = await sidepanel.locator('[data-testid="workspace-sql"]').inputValue();
+    assert(completedSql.includes("dwd_order_detail_di"), "工作台联想没有补全表名");
+    results.push(["workspace_autocomplete", true, "dwd_ord -> dwd_order_detail_di"]);
 
     await clickTestId(sidepanel, "tab-templates");
     await fillTestId(sidepanel, "template-name", "新用户日报");
@@ -165,8 +147,9 @@ async function main() {
       await fillTestId(sidepanel, "ask-prompt", "查询 2026-07-01 到 2026-07-04 每个渠道的新用户数，按日期和渠道排序");
       await clickTestId(sidepanel, "ask-generate");
       await sidepanel.locator("[data-testid='sql-result']").waitFor({ state: "visible", timeout: 90000 });
-      const sql = await sidepanel.locator("[data-testid='sql-result']").textContent();
-      assert(sql && /select/i.test(sql) && /dwd_user_register_di/i.test(sql), "DeepSeek 生成 SQL 未包含预期表");
+      await clickTestId(sidepanel, "tab-write");
+      const sql = await sidepanel.locator("[data-testid='workspace-sql']").inputValue();
+      assert(/select/i.test(sql) && /dwd_user_register_di/i.test(sql), "DeepSeek 生成 SQL 未进入工作台");
       results.push(["ask_deepseek_generation", true, compact(sql)]);
 
       await clickTestId(sidepanel, "tab-history");
@@ -191,21 +174,6 @@ async function getExtensionWorker(context) {
   return worker;
 }
 
-async function sendContentMessage(worker, message) {
-  return worker.evaluate(async (payload) => {
-    const tabs = await new Promise((resolve) => chrome.tabs.query({ url: "http://127.0.0.1:5177/*" }, resolve));
-    if (!tabs[0]?.id) throw new Error("未找到 demo 查询页 tab");
-    return new Promise((resolve, reject) => {
-      chrome.tabs.sendMessage(tabs[0].id, payload, (response) => {
-        const error = chrome.runtime.lastError;
-        if (error) reject(new Error(error.message));
-        else if (!response?.ok) reject(new Error(response?.error ?? "content message failed"));
-        else resolve(response);
-      });
-    });
-  }, message);
-}
-
 async function clickTestId(page, testId) {
   const locator = page.locator(`[data-testid="${testId}"]`);
   await expectOne(locator, testId);
@@ -216,6 +184,12 @@ async function fillTestId(page, testId, value) {
   const locator = page.locator(`[data-testid="${testId}"]`);
   await expectOne(locator, testId);
   await locator.fill(value);
+}
+
+async function selectTestId(page, testId, value) {
+  const locator = page.locator(`[data-testid="${testId}"]`);
+  await expectOne(locator, testId);
+  await locator.selectOption(value);
 }
 
 async function expectVisible(locator, label) {

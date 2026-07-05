@@ -107,29 +107,10 @@ export type SqlTemplate = {
   updatedAt: string;
 };
 
-export type EditorContext = {
-  detected: boolean;
-  adapter: string;
-  sql: string;
-  selection: string;
-  url: string;
-  title: string;
-  database?: string | null;
-};
-
-export type UrlScopeRule = {
-  id: string;
-  urlPattern: string;
-  database: string;
-  createdAt: string;
-};
-
 export type GenerateSqlRequest = {
   mode: "ask" | "complete";
   prompt: string;
   currentSql?: string;
-  selection?: string;
-  url?: string;
   database?: string | null;
   skill?: DbSkill | null;
   config: ModelConfig;

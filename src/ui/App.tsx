@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent } from "react";
 import {
-  BookOpen,
   Bot,
   Check,
   ClipboardList,
@@ -8,7 +8,6 @@ import {
   Copy,
   Database,
   History,
-  PanelRightOpen,
   Plus,
   Save,
   Search,
@@ -20,49 +19,31 @@ import {
 } from "lucide-react";
 import type {
   DbSkill,
-  EditorContext,
   GenerateSqlResponse,
   ModelConfig,
   SqlHistoryItem,
   SqlTemplate,
   TemplateVariable,
-  TemplateVariableType,
-  UrlScopeRule
+  TemplateVariableType
 } from "../types";
-import { createId, getStore, saveHistory, saveModelConfig, saveSkills, saveTemplates, saveUrlScopeRules } from "../storage";
-import { getSkillSuggestions, parseDbSkill } from "../skill";
-import { createUrlPattern, inferDatabaseFromUrl } from "../scope";
+import { createId, getStore, saveHistory, saveModelConfig, saveSkills, saveTemplates } from "../storage";
+import { filterTablesByDatabase, parseDbSkill } from "../skill";
+import {
+  getCurrentToken,
+  getDatabaseOptions,
+  getWorkspaceSuggestions,
+  renderTemplate,
+  VARIABLE_TYPES
+} from "./workspace";
+import type { Suggestion, WorkspaceState } from "./workspace";
 
-type TabId = "ask" | "complete" | "history" | "templates" | "skill" | "settings";
+type TabId = "write" | "ask" | "history" | "templates" | "skill" | "settings";
 
 type AppProps = {
   initialTab?: TabId;
 };
 
-const EMPTY_CONTEXT: EditorContext = {
-  detected: false,
-  adapter: "none",
-  sql: "",
-  selection: "",
-  url: "",
-  title: "",
-  database: null
-};
-
-const VARIABLE_TYPES: TemplateVariableType[] = [
-  "text",
-  "number",
-  "date",
-  "date_range",
-  "select",
-  "multi_select",
-  "table",
-  "column",
-  "metric",
-  "sql_fragment"
-];
-
-export function App({ initialTab = "ask" }: AppProps) {
+export function App({ initialTab = "write" }: AppProps) {
   const [tab, setTab] = useState<TabId>(initialTab);
   const [config, setConfig] = useState<ModelConfig>({
     baseUrl: "https://api.deepseek.com",
@@ -73,15 +54,19 @@ export function App({ initialTab = "ask" }: AppProps) {
   });
   const [skills, setSkills] = useState<DbSkill[]>([]);
   const [activeSkillId, setActiveSkillId] = useState<string | null>(null);
-  const [urlScopeRules, setUrlScopeRules] = useState<UrlScopeRule[]>([]);
   const [history, setHistory] = useState<SqlHistoryItem[]>([]);
   const [templates, setTemplates] = useState<SqlTemplate[]>([]);
-  const [context, setContext] = useState<EditorContext>(EMPTY_CONTEXT);
+  const [workspace, setWorkspace] = useState<WorkspaceState>({ sql: "", database: null });
   const [status, setStatus] = useState("");
 
   const activeSkill = useMemo(
     () => skills.find((skill) => skill.id === activeSkillId) ?? skills[0] ?? null,
     [activeSkillId, skills]
+  );
+  const databases = useMemo(() => getDatabaseOptions(activeSkill), [activeSkill]);
+  const scopedTables = useMemo(
+    () => filterTablesByDatabase(activeSkill?.tables ?? [], workspace.database),
+    [activeSkill, workspace.database]
   );
 
   useEffect(() => {
@@ -89,39 +74,36 @@ export function App({ initialTab = "ask" }: AppProps) {
       setConfig(store.modelConfig);
       setSkills(store.skills);
       setActiveSkillId(store.activeSkillId);
-      setUrlScopeRules(store.urlScopeRules);
       setHistory(store.history);
       setTemplates(store.templates);
-      refreshEditorContext(store.urlScopeRules);
+      setStatus("本地 SQL 工作台已就绪");
     });
   }, []);
 
-  async function refreshEditorContext(scopeRules = urlScopeRules) {
-    try {
-      const result = await sendToActiveTab<EditorContext>({ type: "getEditorContext" });
-      const database = result.database ?? inferDatabaseFromUrl(result.url, scopeRules);
-      const nextContext = { ...result, database };
-      setContext(nextContext);
-      setStatus(
-        nextContext.detected
-          ? `已连接编辑器：${nextContext.adapter}${nextContext.database ? ` · DB: ${nextContext.database}` : ""}`
-          : `未识别到 SQL 编辑器${nextContext.database ? ` · DB: ${nextContext.database}` : ""}，可手动复制使用`
-      );
-    } catch (error) {
-      const fallback = await getActiveTabContext(scopeRules);
-      const reason = error instanceof Error && error.message ? `：${error.message}` : "";
-      setContext(fallback);
-      setStatus(
-        fallback.url
-          ? `当前页面未响应编辑器读取${reason}${fallback.database ? ` · 已识别 DB: ${fallback.database}` : ""}`
-          : "当前页面未注入插件脚本，打开 DB 平台页面后再试"
-      );
+  useEffect(() => {
+    if (workspace.database && !databases.includes(workspace.database)) {
+      setWorkspace((current) => ({ ...current, database: databases[0] ?? null }));
     }
-  }
+  }, [databases, workspace.database]);
 
   async function copySql(sql: string, label = "SQL") {
     await navigator.clipboard.writeText(sql);
     setStatus(`已复制${label}`);
+  }
+
+  function useSql(sql: string, source = "SQL") {
+    setWorkspace((current) => ({ ...current, sql }));
+    setTab("write");
+    setStatus(`已放入工作台：${source}`);
+  }
+
+  function updateWorkspaceSql(sql: string) {
+    setWorkspace((current) => ({ ...current, sql }));
+  }
+
+  function updateWorkspaceDatabase(database: string | null) {
+    setWorkspace((current) => ({ ...current, database }));
+    setStatus(database ? `已切换 DB：${database}` : "已切换到全部 DB");
   }
 
   async function addHistory(item: Omit<SqlHistoryItem, "id" | "createdAt">) {
@@ -153,25 +135,9 @@ export function App({ initialTab = "ask" }: AppProps) {
     await saveSkills(next, nextActiveSkillId);
   }
 
-  async function saveCurrentDatabase(database: string) {
-    if (!context.url || !database.trim()) return;
-    const pattern = createUrlPattern(context.url);
-    const nextRule: UrlScopeRule = {
-      id: createId("scope"),
-      urlPattern: pattern,
-      database: database.trim(),
-      createdAt: new Date().toISOString()
-    };
-    const next = [nextRule, ...urlScopeRules.filter((rule) => rule.urlPattern !== pattern)];
-    setUrlScopeRules(next);
-    setContext({ ...context, database: database.trim() });
-    await saveUrlScopeRules(next);
-    setStatus(`已保存当前 URL scope：${database.trim()}`);
-  }
-
   const tabs: Array<{ id: TabId; label: string; icon: JSX.Element }> = [
+    { id: "write", label: "Write", icon: <Code2 size={16} /> },
     { id: "ask", label: "Ask", icon: <Bot size={16} /> },
-    { id: "complete", label: "Complete", icon: <Wand2 size={16} /> },
     { id: "history", label: "History", icon: <History size={16} /> },
     { id: "templates", label: "Templates", icon: <ClipboardList size={16} /> },
     { id: "skill", label: "Skill", icon: <Database size={16} /> },
@@ -187,8 +153,8 @@ export function App({ initialTab = "ask" }: AppProps) {
             {activeSkill ? activeSkill.name : "未导入 DB Skill"} · {config.dialect}
           </div>
         </div>
-        <button className="icon-button" title="刷新编辑器上下文" onClick={() => refreshEditorContext()}>
-          <PanelRightOpen size={17} />
+        <button className="icon-button" title="复制工作台 SQL" onClick={() => copySql(workspace.sql)} disabled={!workspace.sql.trim()}>
+          <Copy size={17} />
         </button>
       </header>
 
@@ -202,42 +168,52 @@ export function App({ initialTab = "ask" }: AppProps) {
       </nav>
 
       <main className="content">
-        <ScopeBar context={context} onSaveDatabase={saveCurrentDatabase} />
+        <WorkspaceScope
+          activeSkill={activeSkill}
+          databases={databases}
+          selectedDatabase={workspace.database}
+          scopedTableCount={scopedTables.length}
+          onDatabaseChange={updateWorkspaceDatabase}
+        />
+        {tab === "write" && (
+          <WriteTab
+            config={config}
+            workspace={workspace}
+            activeSkill={activeSkill}
+            onSqlChange={updateWorkspaceSql}
+            onGenerated={async (instruction, result) => {
+              updateWorkspaceSql(result.sql);
+              await addHistory({ kind: "complete", title: instruction.slice(0, 80) || "SQL 补全", prompt: instruction, sql: result.sql, skillId: activeSkill?.id });
+              setStatus("已在工作台生成补全 SQL");
+            }}
+            onCopy={copySql}
+          />
+        )}
         {tab === "ask" && (
           <AskTab
             config={config}
-            context={context}
+            workspace={workspace}
             activeSkill={activeSkill}
-            onGenerated={(prompt, result) =>
-              addHistory({ kind: "ask", title: prompt.slice(0, 80) || "对话生成 SQL", prompt, sql: result.sql, skillId: activeSkill?.id })
-            }
+            onGenerated={async (prompt, result) => {
+              updateWorkspaceSql(result.sql);
+              await addHistory({ kind: "ask", title: prompt.slice(0, 80) || "对话生成 SQL", prompt, sql: result.sql, skillId: activeSkill?.id });
+              setStatus("已生成并放入工作台");
+            }}
             onCopy={copySql}
           />
         )}
-        {tab === "complete" && (
-          <CompleteTab
-            config={config}
-            context={context}
-            activeSkill={activeSkill}
-            onRefreshContext={refreshEditorContext}
-            onGenerated={(prompt, result) =>
-              addHistory({ kind: "complete", title: prompt.slice(0, 80) || "SQL 补全", prompt, sql: result.sql, skillId: activeSkill?.id })
-            }
-            onCopy={copySql}
-          />
-        )}
-        {tab === "history" && <HistoryTab history={history} onUpdate={updateHistory} onCopy={copySql} />}
+        {tab === "history" && <HistoryTab history={history} onUpdate={updateHistory} onCopy={copySql} onUse={useSql} />}
         {tab === "templates" && (
           <TemplatesTab
             templates={templates}
-            context={context}
+            workspace={workspace}
             activeSkill={activeSkill}
-            onRefreshContext={refreshEditorContext}
             onUpdate={updateTemplates}
             onUseTemplate={async (sql) => {
+              useSql(sql, "模板 SQL");
               await addHistory({ kind: "template", title: "模板生成 SQL", sql, skillId: activeSkill?.id });
-              await copySql(sql, "模板 SQL");
             }}
+            onCopy={copySql}
           />
         )}
         {tab === "skill" && <SkillTab skills={skills} activeSkillId={activeSkillId} onUpdate={updateSkills} />}
@@ -249,54 +225,234 @@ export function App({ initialTab = "ask" }: AppProps) {
       </main>
 
       <footer className="statusbar">
-        <span className={context.detected ? "dot ok" : "dot"} />
+        <span className={activeSkill ? "dot ok" : "dot"} />
         <span>{status || "准备就绪"}</span>
       </footer>
     </div>
   );
 }
 
-function ScopeBar({ context, onSaveDatabase }: { context: EditorContext; onSaveDatabase: (database: string) => Promise<void> }) {
-  const [database, setDatabase] = useState(context.database ?? "");
-
-  useEffect(() => {
-    setDatabase(context.database ?? "");
-  }, [context.database, context.url]);
-
+function WorkspaceScope({
+  activeSkill,
+  databases,
+  selectedDatabase,
+  scopedTableCount,
+  onDatabaseChange
+}: {
+  activeSkill: DbSkill | null;
+  databases: string[];
+  selectedDatabase: string | null;
+  scopedTableCount: number;
+  onDatabaseChange: (database: string | null) => void;
+}) {
   return (
     <section className="scope-bar">
       <div>
-        <div className="label">当前 DB</div>
-        <div className="muted">{context.url ? context.url.replace(/^https?:\/\//, "").slice(0, 72) : "未连接页面"}</div>
+        <div className="label">工作台 DB</div>
+        <div className="muted">
+          {activeSkill ? `${activeSkill.tables.length} tables · 当前候选 ${scopedTableCount}` : "导入 DB Skill 后可选择 DB"}
+        </div>
       </div>
       <div className="scope-actions">
-        <input
-          data-testid="scope-database"
+        <select
+          data-testid="workspace-database"
           className="input"
-          value={database}
-          onChange={(event) => setDatabase(event.target.value)}
-          placeholder="识别不到时填 DB 名"
-        />
-        <button data-testid="scope-save" className="ghost-button" onClick={() => onSaveDatabase(database)} disabled={!database.trim() || !context.url}>
-          <Save size={14} />
-          保存
-        </button>
+          value={selectedDatabase ?? ""}
+          onChange={(event) => onDatabaseChange(event.target.value || null)}
+          disabled={!activeSkill}
+        >
+          <option value="">全部 DB</option>
+          {databases.map((database) => (
+            <option key={database} value={database}>{database}</option>
+          ))}
+        </select>
       </div>
     </section>
   );
 }
 
+function WriteTab({
+  config,
+  workspace,
+  activeSkill,
+  onSqlChange,
+  onGenerated,
+  onCopy
+}: {
+  config: ModelConfig;
+  workspace: WorkspaceState;
+  activeSkill: DbSkill | null;
+  onSqlChange: (sql: string) => void;
+  onGenerated: (instruction: string, result: GenerateSqlResponse) => Promise<void>;
+  onCopy: (sql: string, label?: string) => Promise<void>;
+}) {
+  const [instruction, setInstruction] = useState("补全这段 SQL");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [explanation, setExplanation] = useState("");
+
+  async function completeSql() {
+    setLoading(true);
+    setError("");
+    try {
+      const next = await sendRuntime<GenerateSqlResponse>({
+        type: "generateSql",
+        payload: {
+          mode: "complete",
+          prompt: instruction,
+          currentSql: workspace.sql,
+          database: workspace.database,
+          skill: activeSkill,
+          config
+        }
+      });
+      setExplanation(next.explanation);
+      await onGenerated(instruction, next);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "补全失败");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <section className="panel">
+      <SqlWorkspaceEditor sql={workspace.sql} database={workspace.database} activeSkill={activeSkill} onChange={onSqlChange} />
+      <div className="row">
+        <button className="ghost-button" onClick={() => onCopy(workspace.sql)} disabled={!workspace.sql.trim()}>
+          <Copy size={14} />
+          复制 SQL
+        </button>
+        <button className="ghost-button danger-text" onClick={() => onSqlChange("")} disabled={!workspace.sql}>
+          <Trash2 size={14} />
+          清空
+        </button>
+      </div>
+
+      <div className="divider" />
+      <label className="label">AI 补全要求</label>
+      <input data-testid="workspace-instruction" className="input" value={instruction} onChange={(event) => setInstruction(event.target.value)} />
+      <button data-testid="workspace-complete" className="primary-button" onClick={completeSql} disabled={loading || !workspace.sql.trim()}>
+        <Wand2 size={16} />
+        {loading ? "补全中..." : "补全工作台 SQL"}
+      </button>
+      {error && <div className="notice danger">{error}</div>}
+      {explanation && <div className="notice">{explanation}</div>}
+    </section>
+  );
+}
+
+function SqlWorkspaceEditor({
+  sql,
+  database,
+  activeSkill,
+  onChange
+}: {
+  sql: string;
+  database: string | null;
+  activeSkill: DbSkill | null;
+  onChange: (sql: string) => void;
+}) {
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const [cursor, setCursor] = useState(0);
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const token = getCurrentToken(sql, cursor);
+  const suggestions = useMemo(
+    () => getWorkspaceSuggestions(activeSkill, token.value, database, sql, token.start),
+    [activeSkill, database, sql, token.start, token.value]
+  );
+
+  useEffect(() => {
+    setSelectedIndex(0);
+  }, [token.value, database]);
+
+  function syncCursor() {
+    setCursor(textareaRef.current?.selectionStart ?? sql.length);
+  }
+
+  function applySuggestion(suggestion: Suggestion) {
+    const nextSql = `${sql.slice(0, token.start)}${suggestion.insertText}${sql.slice(token.end)}`;
+    const nextCursor = token.start + suggestion.insertText.length;
+    onChange(nextSql);
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
+      setCursor(nextCursor);
+    });
+  }
+
+  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (!suggestions.length) return;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setSelectedIndex((index) => (index + 1) % suggestions.length);
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setSelectedIndex((index) => (index - 1 + suggestions.length) % suggestions.length);
+      return;
+    }
+    if (event.key === "Tab" || event.key === "Enter") {
+      event.preventDefault();
+      applySuggestion(suggestions[selectedIndex]);
+    }
+  }
+
+  return (
+    <div className="workspace-editor">
+      <label className="label">SQL 工作台</label>
+      <textarea
+        ref={textareaRef}
+        data-testid="workspace-sql"
+        className="textarea sql-editor"
+        value={sql}
+        onChange={(event) => {
+          onChange(event.target.value);
+          setCursor(event.target.selectionStart ?? event.target.value.length);
+        }}
+        onClick={syncCursor}
+        onKeyUp={syncCursor}
+        onSelect={syncCursor}
+        onKeyDown={handleKeyDown}
+        placeholder="select * from ..."
+        spellCheck={false}
+      />
+      {suggestions.length > 0 && (
+        <div className="inline-suggestions">
+          {suggestions.map((item, index) => (
+            <button
+              key={`${item.label}-${item.detail}-${index}`}
+              className={index === selectedIndex ? "suggestion active" : "suggestion"}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                applySuggestion(item);
+              }}
+            >
+              <Code2 size={15} />
+              <span>
+                <strong>{item.label}</strong>
+                <small>{item.detail}</small>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AskTab({
   config,
-  context,
+  workspace,
   activeSkill,
   onGenerated,
   onCopy
 }: {
   config: ModelConfig;
-  context: EditorContext;
+  workspace: WorkspaceState;
   activeSkill: DbSkill | null;
-  onGenerated: (prompt: string, result: GenerateSqlResponse) => void;
+  onGenerated: (prompt: string, result: GenerateSqlResponse) => Promise<void>;
   onCopy: (sql: string, label?: string) => Promise<void>;
 }) {
   const [prompt, setPrompt] = useState("");
@@ -313,16 +469,14 @@ function AskTab({
         payload: {
           mode: "ask",
           prompt,
-          currentSql: context.sql,
-          selection: context.selection,
-          url: context.url,
-          database: context.database,
+          currentSql: workspace.sql,
+          database: workspace.database,
           skill: activeSkill,
           config
         }
       });
       setResult(next);
-      onGenerated(prompt, next);
+      await onGenerated(prompt, next);
     } catch (err) {
       setError(err instanceof Error ? err.message : "生成失败");
     } finally {
@@ -342,99 +496,10 @@ function AskTab({
       />
       <button data-testid="ask-generate" className="primary-button" onClick={generate} disabled={loading || !prompt.trim()}>
         <Sparkles size={16} />
-        {loading ? "生成中..." : "生成 SQL"}
+        {loading ? "生成中..." : "生成到工作台"}
       </button>
       {error && <div className="notice danger">{error}</div>}
       <SqlResult result={result} onCopy={onCopy} />
-    </section>
-  );
-}
-
-function CompleteTab({
-  config,
-  context,
-  activeSkill,
-  onRefreshContext,
-  onGenerated,
-  onCopy
-}: {
-  config: ModelConfig;
-  context: EditorContext;
-  activeSkill: DbSkill | null;
-  onRefreshContext: () => Promise<void>;
-  onGenerated: (prompt: string, result: GenerateSqlResponse) => void;
-  onCopy: (sql: string, label?: string) => Promise<void>;
-}) {
-  const [instruction, setInstruction] = useState("补全这段 SQL");
-  const [query, setQuery] = useState("");
-  const [result, setResult] = useState<GenerateSqlResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const suggestions = useMemo(() => getSkillSuggestions(activeSkill, query, context.database), [activeSkill, query, context.database]);
-
-  async function generate() {
-    setLoading(true);
-    setError("");
-    try {
-      const next = await sendRuntime<GenerateSqlResponse>({
-        type: "generateSql",
-        payload: {
-          mode: "complete",
-          prompt: instruction,
-          currentSql: context.sql,
-          selection: context.selection,
-          url: context.url,
-          database: context.database,
-          skill: activeSkill,
-          config
-        }
-      });
-      setResult(next);
-      onGenerated(instruction, next);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "补全失败");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  return (
-    <section className="panel">
-      <div className="row between">
-        <div>
-          <div className="label">当前编辑器</div>
-          <div className="muted">{context.detected ? `${context.adapter} · ${context.sql.length} 字符` : "未识别到编辑器"}</div>
-        </div>
-        <button data-testid="complete-refresh" className="ghost-button" onClick={onRefreshContext}>
-          <Search size={15} />
-          读取
-        </button>
-      </div>
-      <textarea data-testid="complete-current-sql" className="textarea compact" value={context.sql} readOnly placeholder="读取当前 DB 平台 SQL 编辑器内容" />
-
-      <label className="label">补全要求</label>
-      <input data-testid="complete-instruction" className="input" value={instruction} onChange={(event) => setInstruction(event.target.value)} />
-      <button data-testid="complete-generate" className="primary-button" onClick={generate} disabled={loading}>
-        <Wand2 size={16} />
-        {loading ? "补全中..." : "智能补全"}
-      </button>
-      {error && <div className="notice danger">{error}</div>}
-      <SqlResult result={result} onCopy={onCopy} />
-
-      <div className="divider" />
-      <label className="label">本地表字段检索</label>
-      <input data-testid="suggestion-query" className="input" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索表、字段、指标" />
-      <div className="suggestion-list">
-        {suggestions.map((item) => (
-          <button key={`${item.label}-${item.detail}`} className="suggestion" onClick={() => onCopy(item.insertText, "片段")}>
-            <Code2 size={15} />
-            <span>
-              <strong>{item.label}</strong>
-              <small>{item.detail}</small>
-            </span>
-          </button>
-        ))}
-      </div>
     </section>
   );
 }
@@ -467,11 +532,13 @@ function SqlResult({
 function HistoryTab({
   history,
   onUpdate,
-  onCopy
+  onCopy,
+  onUse
 }: {
   history: SqlHistoryItem[];
   onUpdate: (history: SqlHistoryItem[]) => Promise<void>;
   onCopy: (sql: string, label?: string) => Promise<void>;
+  onUse: (sql: string, source?: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const filtered = history.filter((item) => `${item.title} ${item.prompt ?? ""} ${item.sql}`.toLowerCase().includes(query.toLowerCase()));
@@ -502,6 +569,10 @@ function HistoryTab({
             </div>
             <pre className="code-block small">{item.sql}</pre>
             <div className="row">
+              <button className="ghost-button" onClick={() => onUse(item.sql, item.title)}>
+                <Check size={14} />
+                使用
+              </button>
               <button className="ghost-button" onClick={() => onCopy(item.sql)}>
                 <Copy size={14} />
                 复制
@@ -521,18 +592,18 @@ function HistoryTab({
 
 function TemplatesTab({
   templates,
-  context,
+  workspace,
   activeSkill,
-  onRefreshContext,
   onUpdate,
-  onUseTemplate
+  onUseTemplate,
+  onCopy
 }: {
   templates: SqlTemplate[];
-  context: EditorContext;
+  workspace: WorkspaceState;
   activeSkill: DbSkill | null;
-  onRefreshContext: () => Promise<void>;
   onUpdate: (templates: SqlTemplate[]) => Promise<void>;
   onUseTemplate: (sql: string) => Promise<void>;
+  onCopy: (sql: string, label?: string) => Promise<void>;
 }) {
   const [name, setName] = useState("");
   const [draftSql, setDraftSql] = useState("");
@@ -549,9 +620,8 @@ function TemplatesTab({
     if (!selectedTemplateId && templates[0]) setSelectedTemplateId(templates[0].id);
   }, [selectedTemplateId, templates]);
 
-  function loadFromEditor() {
-    setDraftSql(context.selection || context.sql);
-    if (!context.sql) onRefreshContext();
+  function loadFromWorkspace() {
+    setDraftSql(workspace.sql);
   }
 
   function addVariable() {
@@ -590,13 +660,13 @@ function TemplatesTab({
       <div className="subpanel">
         <div className="row between">
           <h2>创建模板</h2>
-          <button className="ghost-button" onClick={loadFromEditor}>
-            <BookOpen size={15} />
-            载入 SQL
+          <button className="ghost-button" onClick={loadFromWorkspace} disabled={!workspace.sql.trim()}>
+            <Code2 size={15} />
+            载入当前 SQL
           </button>
         </div>
         <input data-testid="template-name" className="input" value={name} onChange={(event) => setName(event.target.value)} placeholder="模板名称，例如：渠道 GMV 日报" />
-        <textarea data-testid="template-sql" className="textarea template-sql" value={draftSql} onChange={(event) => setDraftSql(event.target.value)} placeholder="粘贴 SQL，或从当前编辑器载入" />
+        <textarea data-testid="template-sql" className="textarea template-sql" value={draftSql} onChange={(event) => setDraftSql(event.target.value)} placeholder="粘贴 SQL，或从工作台载入" />
         <div className="variable-grid">
           <input data-testid="template-fragment" className="input" value={fragment} onChange={(event) => setFragment(event.target.value)} placeholder="要替换的片段" />
           <input data-testid="template-variable-name" className="input" value={variableName} onChange={(event) => setVariableName(event.target.value)} placeholder="变量名" />
@@ -646,8 +716,12 @@ function TemplatesTab({
             <pre className="code-block">{renderedSql}</pre>
             <div className="row">
               <button className="primary-button" onClick={() => onUseTemplate(renderedSql)}>
-                <Copy size={15} />
-                复制 SQL
+                <Check size={15} />
+                使用到工作台
+              </button>
+              <button className="ghost-button" onClick={() => onCopy(renderedSql, "模板 SQL")}>
+                <Copy size={14} />
+                复制
               </button>
               <button className="ghost-button danger-text" onClick={() => onUpdate(templates.filter((template) => template.id !== selectedTemplate.id))}>
                 <Trash2 size={14} />
@@ -707,7 +781,7 @@ function SkillTab({
             <div className="row between">
               <div>
                 <h3>{skill.name}</h3>
-                <p>{skill.tables.length} tables · {skill.metrics.length} metrics · {new Date(skill.updatedAt).toLocaleString()}</p>
+                <p>{skill.tables.length} tables · {getDatabaseOptions(skill).length} DBs · {new Date(skill.updatedAt).toLocaleString()}</p>
               </div>
               <div className="row">
                 <button className="ghost-button" onClick={() => onUpdate(skills, skill.id)}>
@@ -777,10 +851,6 @@ function SettingsTab({ config, onSave }: { config: ModelConfig; onSave: (config:
   );
 }
 
-function renderTemplate(sql: string, values: Record<string, string>) {
-  return sql.replace(/\{\{(\w+)\}\}/g, (_, name: string) => values[name] ?? `{{${name}}}`);
-}
-
 async function sendRuntime<T>(message: unknown): Promise<T> {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(message, (response) => {
@@ -795,61 +865,4 @@ async function sendRuntime<T>(message: unknown): Promise<T> {
       resolve(response.result as T);
     });
   });
-}
-
-async function sendToActiveTab<T = unknown>(message: unknown): Promise<T> {
-  const tab = await getActiveHttpTab();
-  if (!tab?.id) throw new Error("没有活动标签页");
-  try {
-    return await sendMessageToTab<T>(tab.id, message);
-  } catch (error) {
-    await injectContentScript(tab.id);
-    return sendMessageToTab<T>(tab.id, message);
-  }
-}
-
-async function sendMessageToTab<T>(tabId: number, message: unknown): Promise<T> {
-  return new Promise((resolve, reject) => {
-    chrome.tabs.sendMessage(tabId, message, (response) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-      if (!response?.ok) {
-        reject(new Error(response?.error ?? "页面操作失败"));
-        return;
-      }
-      resolve((response.result ?? response) as T);
-    });
-  });
-}
-
-async function injectContentScript(tabId: number): Promise<void> {
-  if (!chrome.scripting?.executeScript) {
-    throw new Error("插件权限未生效，请在 chrome://extensions 重新加载插件");
-  }
-  await chrome.scripting.executeScript({
-    target: { tabId },
-    files: ["assets/content.js"]
-  });
-}
-
-async function getActiveTabContext(urlScopeRules: UrlScopeRule[]): Promise<EditorContext> {
-  const tab = await getActiveHttpTab();
-  const url = tab?.url ?? "";
-  return {
-    ...EMPTY_CONTEXT,
-    url,
-    title: tab?.title ?? "",
-    database: url ? inferDatabaseFromUrl(url, urlScopeRules) : null
-  };
-}
-
-async function getActiveHttpTab(): Promise<chrome.tabs.Tab | null> {
-  const activeTabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  const activeTab = activeTabs.find((tab) => tab.url?.startsWith("http"));
-  if (activeTab) return activeTab;
-
-  const tabs = await chrome.tabs.query({ currentWindow: true });
-  return tabs.find((tab) => tab.active && tab.url?.startsWith("http")) ?? tabs.find((tab) => tab.url?.startsWith("http")) ?? null;
 }

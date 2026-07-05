@@ -1,6 +1,5 @@
 import type { DbSkill } from "../src/types";
 import { filterTablesByDatabase, parseDbSkill, retrieveRelevantSkill, skillToPrompt } from "../src/skill";
-import { inferDatabaseFromUrl } from "../src/scope";
 
 const skill: DbSkill = {
   id: "skill_test",
@@ -40,10 +39,10 @@ const skill: DbSkill = {
   ]
 };
 
-const inferredDb = inferDatabaseFromUrl("https://cloud.bytedance.net/rds/detail/db/global/life_opact/autoSQL");
-assertEqual(inferredDb, "life_opact", "ByteDance RDS URL database inference");
 const parsedWithTail = parseDbSkill(`${JSON.stringify({ name: "tail_test", tables: [] })}\nDB`, "fallback");
 assertEqual(parsedWithTail.name, "tail_test", "parser should tolerate accidental trailing text after JSON");
+const parsedArray = parseDbSkill(JSON.stringify([{ database: "life_opact", name: "array_table", columns: [] }]), "array_skill");
+assertEqual(parsedArray.tables[0]?.name, "array_table", "parser should support JSON array skill input");
 assert(filterTablesByDatabase(skill.tables, "life_opact").some((table) => table.name === "events"), "multi database string should match a single scoped database");
 
 const explicit = retrieveRelevantSkill(skill, {

@@ -20,7 +20,7 @@ export async function generateSql(request: GenerateSqlRequest): Promise<Generate
 
   const endpoint = normalizeEndpoint(config.baseUrl);
   const system = [
-    "你是一个严谨的 SQL Copilot，帮助用户在 DB 管理平台中写 SQL。",
+    "你是一个严谨的 SQL Copilot，帮助用户在插件 SQL 工作台中写 SQL。",
     "你必须优先使用用户提供的 DB Skill，不要编造不存在的表或字段。",
     "默认只生成 SELECT 查询。除非用户明确要求，不要生成 INSERT、UPDATE、DELETE、DROP、ALTER。",
     "如果缺少必要信息，先说明缺失信息，并给出可执行的最小 SQL 或需要用户补充的问题。",
@@ -59,7 +59,6 @@ function buildUserPrompt(request: GenerateSqlRequest): string {
   const retrieval = retrieveRelevantSkill(request.skill, {
     prompt: request.prompt,
     currentSql: request.currentSql,
-    selection: request.selection,
     database: request.database
   });
   const skill = skillToPrompt(retrieval.skill, retrieval.reason);
@@ -74,11 +73,8 @@ function buildUserPrompt(request: GenerateSqlRequest): string {
       "## 当前 SQL",
       request.currentSql || "(空)",
       "",
-      "## 当前页面 DB",
+      "## 当前工作台 DB",
       request.database || "(未知)",
-      "",
-      "## 当前选中内容",
-      request.selection || "(无)",
       "",
       "## 用户补全要求",
       request.prompt || "补全这段 SQL"
@@ -94,7 +90,7 @@ function buildUserPrompt(request: GenerateSqlRequest): string {
     "## 当前 SQL",
     request.currentSql || "(空)",
     "",
-    "## 当前页面 DB",
+    "## 当前工作台 DB",
     request.database || "(未知)",
     "",
     "## 用户需求",

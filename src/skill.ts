@@ -10,7 +10,7 @@ export function parseDbSkill(input: string, fallbackName = "DB Skill"): DbSkill 
     throw new Error("DB Skill 内容不能为空");
   }
 
-  if (trimmed.startsWith("{")) {
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
     return parseJsonSkill(trimmed, fallbackName);
   }
 
@@ -18,32 +18,101 @@ export function parseDbSkill(input: string, fallbackName = "DB Skill"): DbSkill 
 }
 
 function parseJsonSkill(input: string, fallbackName: string): DbSkill {
-  const parsed = parseJsonObject(input) as Partial<DbSkill> & {
-    dialect?: SqlDialect;
-    tables?: DbTable[];
-    metrics?: DbMetric[];
-    joins?: DbJoin[];
-  };
+  const parsed = parseJsonObject(input);
+  const normalized = normalizeJsonSkill(parsed, fallbackName);
 
   return {
     id: createId("skill"),
-    name: parsed.name ?? fallbackName,
-    dialect: parsed.dialect,
+    name: normalized.name,
+    dialect: normalized.dialect,
     raw: input,
-    tables: parsed.tables ?? [],
-    metrics: parsed.metrics ?? [],
-    joins: parsed.joins ?? [],
+    tables: normalized.tables,
+    metrics: normalized.metrics,
+    joins: normalized.joins,
     updatedAt: new Date().toISOString()
   };
+}
+
+function normalizeJsonSkill(input: unknown, fallbackName: string): {
+  name: string;
+  dialect?: SqlDialect;
+  tables: DbTable[];
+  metrics: DbMetric[];
+  joins: DbJoin[];
+} {
+  if (Array.isArray(input)) {
+    return {
+      name: fallbackName,
+      tables: input.map(normalizeTable).filter(Boolean) as DbTable[],
+      metrics: [],
+      joins: []
+    };
+  }
+
+  if (!isRecord(input)) {
+    throw new Error("JSON Skill 格式不正确");
+  }
+
+  if (isTableLike(input) && !Array.isArray(input.tables)) {
+    const table = normalizeTable(input);
+    return {
+      name: String(input.name ?? fallbackName),
+      dialect: input.dialect as SqlDialect | undefined,
+      tables: table ? [table] : [],
+      metrics: normalizeArray<DbMetric>(input.metrics),
+      joins: normalizeArray<DbJoin>(input.joins)
+    };
+  }
+
+  const rootDatabase = typeof input.database === "string" ? input.database : undefined;
+  const tables = normalizeArray<DbTable>(input.tables).map((table) => normalizeTable({ ...table, database: table.database ?? rootDatabase }));
+  return {
+    name: String(input.name ?? fallbackName),
+    dialect: input.dialect as SqlDialect | undefined,
+    tables: tables.filter(Boolean) as DbTable[],
+    metrics: normalizeArray<DbMetric>(input.metrics),
+    joins: normalizeArray<DbJoin>(input.joins)
+  };
+}
+
+function normalizeTable(value: unknown): DbTable | null {
+  if (!isRecord(value) || typeof value.name !== "string" || !value.name.trim()) return null;
+  return {
+    database: typeof value.database === "string" ? value.database : undefined,
+    schema: typeof value.schema === "string" ? value.schema : undefined,
+    name: value.name,
+    description: typeof value.description === "string" ? value.description : undefined,
+    business: typeof value.business === "string" ? value.business : undefined,
+    grain: typeof value.grain === "string" ? value.grain : undefined,
+    refresh: typeof value.refresh === "string" ? value.refresh : undefined,
+    owner: typeof value.owner === "string" ? value.owner : undefined,
+    relatedTables: Array.isArray(value.relatedTables) ? value.relatedTables as DbTable["relatedTables"] : undefined,
+    columns: normalizeArray<DbColumn>(value.columns),
+    partitions: Array.isArray(value.partitions) ? value.partitions.filter((item): item is string => typeof item === "string") : undefined
+  };
+}
+
+function isTableLike(value: Record<string, unknown>): boolean {
+  return typeof value.name === "string" && ("columns" in value || "business" in value || "relatedTables" in value);
+}
+
+function normalizeArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? value as T[] : [];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function parseJsonObject(input: string): unknown {
   try {
     return JSON.parse(input);
   } catch (error) {
-    const lastBrace = input.lastIndexOf("}");
-    if (lastBrace > 0) {
-      return JSON.parse(input.slice(0, lastBrace + 1));
+    const lastObjectBrace = input.lastIndexOf("}");
+    const lastArrayBracket = input.lastIndexOf("]");
+    const lastJsonBoundary = Math.max(lastObjectBrace, lastArrayBracket);
+    if (lastJsonBoundary > 0) {
+      return JSON.parse(input.slice(0, lastJsonBoundary + 1));
     }
     throw error;
   }
@@ -147,12 +216,12 @@ function stripTicks(value: string): string {
 
 export function retrieveRelevantSkill(
   skill: DbSkill | null | undefined,
-  input: { prompt?: string; currentSql?: string; selection?: string; database?: string | null }
+  input: { prompt?: string; currentSql?: string; database?: string | null }
 ): { skill: DbSkill | null; reason: string } {
   if (!skill) return { skill: null, reason: "未提供 DB Skill" };
   const scopedTables = filterTablesByDatabase(skill.tables, input.database ?? null);
   const scopedSkill = { ...skill, tables: scopedTables };
-  const databaseReason = input.database ? `当前页面 DB：${input.database}，已先过滤到该 DB 范围。` : "";
+  const databaseReason = input.database ? `当前工作台 DB：${input.database}，已先过滤到该 DB 范围。` : "";
 
   const explicitTableNames = extractExplicitTables(input.currentSql ?? "", scopedSkill);
   if (explicitTableNames.size > 0) {
@@ -163,7 +232,7 @@ export function retrieveRelevantSkill(
     };
   }
 
-  const searchText = [input.prompt, input.currentSql, input.selection].filter(Boolean).join("\n");
+  const searchText = [input.prompt, input.currentSql].filter(Boolean).join("\n");
   const scoredTables = scopedSkill.tables
     .map((table) => ({ table, score: scoreTable(table, searchText) }))
     .filter((item) => item.score > 0)
@@ -324,8 +393,8 @@ function filterJoins(joins: DbJoin[], tables: DbTable[], mode: "any" | "both"): 
   });
 }
 
-function filterMetrics(metrics: DbMetric[], tables: DbTable[], input: { prompt?: string; currentSql?: string; selection?: string }): DbMetric[] {
-  const searchText = [input.prompt, input.currentSql, input.selection].filter(Boolean).join(" ").toLowerCase();
+function filterMetrics(metrics: DbMetric[], tables: DbTable[], input: { prompt?: string; currentSql?: string }): DbMetric[] {
+  const searchText = [input.prompt, input.currentSql].filter(Boolean).join(" ").toLowerCase();
   const tableTerms = new Set<string>();
   for (const table of tables) {
     tableTerms.add(normalizeName(table.name));
