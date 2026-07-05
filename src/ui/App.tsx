@@ -31,7 +31,7 @@ import type {
 } from "../types";
 import { createId, getStore, saveHistory, saveModelConfig, saveSkills, saveTemplates, saveUrlScopeRules } from "../storage";
 import { getSkillSuggestions, parseDbSkill } from "../skill";
-import { createUrlPattern } from "../scope";
+import { createUrlPattern, inferDatabaseFromUrl } from "../scope";
 
 type TabId = "ask" | "complete" | "history" | "templates" | "skill" | "settings";
 
@@ -92,18 +92,29 @@ export function App({ initialTab = "ask" }: AppProps) {
       setUrlScopeRules(store.urlScopeRules);
       setHistory(store.history);
       setTemplates(store.templates);
+      refreshEditorContext(store.urlScopeRules);
     });
-    refreshEditorContext();
   }, []);
 
-  async function refreshEditorContext() {
+  async function refreshEditorContext(scopeRules = urlScopeRules) {
     try {
       const result = await sendToActiveTab<EditorContext>({ type: "getEditorContext" });
-      setContext(result);
-      setStatus(result.detected ? `已连接编辑器：${result.adapter}${result.database ? ` · DB: ${result.database}` : ""}` : "未识别到 SQL 编辑器，可手动复制使用");
+      const database = result.database ?? inferDatabaseFromUrl(result.url, scopeRules);
+      const nextContext = { ...result, database };
+      setContext(nextContext);
+      setStatus(
+        nextContext.detected
+          ? `已连接编辑器：${nextContext.adapter}${nextContext.database ? ` · DB: ${nextContext.database}` : ""}`
+          : `未识别到 SQL 编辑器${nextContext.database ? ` · DB: ${nextContext.database}` : ""}，可手动复制使用`
+      );
     } catch {
-      setContext(EMPTY_CONTEXT);
-      setStatus("当前页面未注入插件脚本，打开 DB 平台页面后再试");
+      const fallback = await getActiveTabContext(scopeRules);
+      setContext(fallback);
+      setStatus(
+        fallback.url
+          ? `当前页面未响应编辑器读取${fallback.database ? ` · 已识别 DB: ${fallback.database}` : ""}，刷新页面后可继续使用内联补全`
+          : "当前页面未注入插件脚本，打开 DB 平台页面后再试"
+      );
     }
   }
 
@@ -177,7 +188,7 @@ export function App({ initialTab = "ask" }: AppProps) {
             {activeSkill ? activeSkill.name : "未导入 DB Skill"} · {config.dialect}
           </div>
         </div>
-        <button className="icon-button" title="刷新编辑器上下文" onClick={refreshEditorContext}>
+        <button className="icon-button" title="刷新编辑器上下文" onClick={() => refreshEditorContext()}>
           <PanelRightOpen size={17} />
         </button>
       </header>
@@ -797,12 +808,7 @@ async function sendRuntime<T>(message: unknown): Promise<T> {
 }
 
 async function sendToActiveTab<T = unknown>(message: unknown): Promise<T> {
-  const tabs = await chrome.tabs.query({ currentWindow: true });
-  const activeTab = tabs.find((tab) => tab.active);
-  const tab =
-    activeTab?.url?.startsWith("http")
-      ? activeTab
-      : tabs.find((candidate) => candidate.url?.startsWith("http"));
+  const tab = await getActiveHttpTab();
   if (!tab?.id) throw new Error("没有活动标签页");
   return new Promise((resolve, reject) => {
     chrome.tabs.sendMessage(tab.id!, message, (response) => {
@@ -817,4 +823,24 @@ async function sendToActiveTab<T = unknown>(message: unknown): Promise<T> {
       resolve((response.result ?? response) as T);
     });
   });
+}
+
+async function getActiveTabContext(urlScopeRules: UrlScopeRule[]): Promise<EditorContext> {
+  const tab = await getActiveHttpTab();
+  const url = tab?.url ?? "";
+  return {
+    ...EMPTY_CONTEXT,
+    url,
+    title: tab?.title ?? "",
+    database: url ? inferDatabaseFromUrl(url, urlScopeRules) : null
+  };
+}
+
+async function getActiveHttpTab(): Promise<chrome.tabs.Tab | null> {
+  const activeTabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  const activeTab = activeTabs.find((tab) => tab.url?.startsWith("http"));
+  if (activeTab) return activeTab;
+
+  const tabs = await chrome.tabs.query({ currentWindow: true });
+  return tabs.find((tab) => tab.active && tab.url?.startsWith("http")) ?? tabs.find((tab) => tab.url?.startsWith("http")) ?? null;
 }
