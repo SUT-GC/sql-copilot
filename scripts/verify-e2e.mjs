@@ -126,6 +126,13 @@ async function main() {
     await expectText(sidepanel, "pay_amount", "本地字段补全");
     results.push(["local_completion", true, "pay_amount suggestion"]);
 
+    await demo.locator("#sql-editor").fill("select pay_a");
+    await demo.locator("#db-skill-copilot-completion").waitFor({ state: "visible", timeout: 10000 });
+    await demo.locator("#sql-editor").press("Tab");
+    const inlineCompletedSql = await demo.locator("#sql-editor").inputValue();
+    assert(inlineCompletedSql.includes("pay_amount"), "页面内联想补全没有把 pay_a 补成 pay_amount");
+    results.push(["inline_autocomplete", true, "pay_a -> pay_amount"]);
+
     if (deepseekKey) {
       await sendContentMessage(worker, {
         type: "setEditorSql",
