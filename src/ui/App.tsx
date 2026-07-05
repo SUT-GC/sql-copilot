@@ -5,10 +5,10 @@ import {
   Check,
   ClipboardList,
   Code2,
+  Copy,
   Database,
   History,
   PanelRightOpen,
-  Play,
   Plus,
   Save,
   Search,
@@ -34,7 +34,6 @@ import { getSkillSuggestions, parseDbSkill } from "../skill";
 import { createUrlPattern, inferDatabaseFromUrl } from "../scope";
 
 type TabId = "ask" | "complete" | "history" | "templates" | "skill" | "settings";
-type InsertMode = "insert" | "replace" | "selection" | "set";
 
 type AppProps = {
   initialTab?: TabId;
@@ -120,18 +119,9 @@ export function App({ initialTab = "ask" }: AppProps) {
     }
   }
 
-  async function insertSql(sql: string, mode: InsertMode = "insert") {
-    if (mode === "insert") {
-      const current = await sendToActiveTab<EditorContext>({ type: "getEditorContext" });
-      await sendToActiveTab({ type: "setEditorSql", sql: appendSql(current.sql, sql) });
-      setStatus("已追加到编辑器 SQL");
-      refreshEditorContext();
-      return;
-    }
-    const type = mode === "selection" ? "replaceSelection" : "setEditorSql";
-    await sendToActiveTab({ type, sql });
-    setStatus(mode === "selection" ? "已替换选中 SQL" : "已替换编辑器 SQL");
-    refreshEditorContext();
+  async function copySql(sql: string, label = "SQL") {
+    await navigator.clipboard.writeText(sql);
+    setStatus(`已复制${label}`);
   }
 
   async function addHistory(item: Omit<SqlHistoryItem, "id" | "createdAt">) {
@@ -221,7 +211,7 @@ export function App({ initialTab = "ask" }: AppProps) {
             onGenerated={(prompt, result) =>
               addHistory({ kind: "ask", title: prompt.slice(0, 80) || "对话生成 SQL", prompt, sql: result.sql, skillId: activeSkill?.id })
             }
-            onInsert={insertSql}
+            onCopy={copySql}
           />
         )}
         {tab === "complete" && (
@@ -233,10 +223,10 @@ export function App({ initialTab = "ask" }: AppProps) {
             onGenerated={(prompt, result) =>
               addHistory({ kind: "complete", title: prompt.slice(0, 80) || "SQL 补全", prompt, sql: result.sql, skillId: activeSkill?.id })
             }
-            onInsert={insertSql}
+            onCopy={copySql}
           />
         )}
-        {tab === "history" && <HistoryTab history={history} onUpdate={updateHistory} onInsert={insertSql} />}
+        {tab === "history" && <HistoryTab history={history} onUpdate={updateHistory} onCopy={copySql} />}
         {tab === "templates" && (
           <TemplatesTab
             templates={templates}
@@ -244,9 +234,9 @@ export function App({ initialTab = "ask" }: AppProps) {
             activeSkill={activeSkill}
             onRefreshContext={refreshEditorContext}
             onUpdate={updateTemplates}
-            onInsert={async (sql) => {
+            onUseTemplate={async (sql) => {
               await addHistory({ kind: "template", title: "模板生成 SQL", sql, skillId: activeSkill?.id });
-              await insertSql(sql);
+              await copySql(sql, "模板 SQL");
             }}
           />
         )}
@@ -301,13 +291,13 @@ function AskTab({
   context,
   activeSkill,
   onGenerated,
-  onInsert
+  onCopy
 }: {
   config: ModelConfig;
   context: EditorContext;
   activeSkill: DbSkill | null;
   onGenerated: (prompt: string, result: GenerateSqlResponse) => void;
-  onInsert: (sql: string, mode?: InsertMode) => Promise<void>;
+  onCopy: (sql: string, label?: string) => Promise<void>;
 }) {
   const [prompt, setPrompt] = useState("");
   const [result, setResult] = useState<GenerateSqlResponse | null>(null);
@@ -355,7 +345,7 @@ function AskTab({
         {loading ? "生成中..." : "生成 SQL"}
       </button>
       {error && <div className="notice danger">{error}</div>}
-      <SqlResult result={result} onInsert={onInsert} />
+      <SqlResult result={result} onCopy={onCopy} />
     </section>
   );
 }
@@ -366,14 +356,14 @@ function CompleteTab({
   activeSkill,
   onRefreshContext,
   onGenerated,
-  onInsert
+  onCopy
 }: {
   config: ModelConfig;
   context: EditorContext;
   activeSkill: DbSkill | null;
   onRefreshContext: () => Promise<void>;
   onGenerated: (prompt: string, result: GenerateSqlResponse) => void;
-  onInsert: (sql: string, mode?: InsertMode) => Promise<void>;
+  onCopy: (sql: string, label?: string) => Promise<void>;
 }) {
   const [instruction, setInstruction] = useState("补全这段 SQL");
   const [query, setQuery] = useState("");
@@ -401,7 +391,6 @@ function CompleteTab({
       });
       setResult(next);
       onGenerated(instruction, next);
-      await onInsert(next.sql, context.selection ? "selection" : "set");
     } catch (err) {
       setError(err instanceof Error ? err.message : "补全失败");
     } finally {
@@ -430,14 +419,14 @@ function CompleteTab({
         {loading ? "补全中..." : "智能补全"}
       </button>
       {error && <div className="notice danger">{error}</div>}
-      <SqlResult result={result} onInsert={onInsert} />
+      <SqlResult result={result} onCopy={onCopy} />
 
       <div className="divider" />
-      <label className="label">本地表字段补全</label>
+      <label className="label">本地表字段检索</label>
       <input data-testid="suggestion-query" className="input" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索表、字段、指标" />
       <div className="suggestion-list">
         {suggestions.map((item) => (
-          <button key={`${item.label}-${item.detail}`} className="suggestion" onClick={() => onInsert(item.insertText)}>
+          <button key={`${item.label}-${item.detail}`} className="suggestion" onClick={() => onCopy(item.insertText, "片段")}>
             <Code2 size={15} />
             <span>
               <strong>{item.label}</strong>
@@ -452,10 +441,10 @@ function CompleteTab({
 
 function SqlResult({
   result,
-  onInsert
+  onCopy
 }: {
   result: GenerateSqlResponse | null;
-  onInsert: (sql: string, mode?: InsertMode) => Promise<void>;
+  onCopy: (sql: string, label?: string) => Promise<void>;
 }) {
   if (!result) return null;
   return (
@@ -463,13 +452,9 @@ function SqlResult({
       <div className="row between">
         <div className="label">生成结果</div>
         <div className="button-group">
-          <button className="ghost-button" onClick={() => onInsert(result.sql)}>
-            <Plus size={14} />
-            插入
-          </button>
-          <button className="ghost-button" onClick={() => onInsert(result.sql, "replace")}>
-            <Check size={14} />
-            替换
+          <button className="ghost-button" onClick={() => onCopy(result.sql)}>
+            <Copy size={14} />
+            复制
           </button>
         </div>
       </div>
@@ -482,11 +467,11 @@ function SqlResult({
 function HistoryTab({
   history,
   onUpdate,
-  onInsert
+  onCopy
 }: {
   history: SqlHistoryItem[];
   onUpdate: (history: SqlHistoryItem[]) => Promise<void>;
-  onInsert: (sql: string, mode?: InsertMode) => Promise<void>;
+  onCopy: (sql: string, label?: string) => Promise<void>;
 }) {
   const [query, setQuery] = useState("");
   const filtered = history.filter((item) => `${item.title} ${item.prompt ?? ""} ${item.sql}`.toLowerCase().includes(query.toLowerCase()));
@@ -517,13 +502,9 @@ function HistoryTab({
             </div>
             <pre className="code-block small">{item.sql}</pre>
             <div className="row">
-              <button className="ghost-button" onClick={() => onInsert(item.sql)}>
-                <Plus size={14} />
-                插入
-              </button>
-              <button className="ghost-button" onClick={() => onInsert(item.sql, "replace")}>
-                <Check size={14} />
-                替换
+              <button className="ghost-button" onClick={() => onCopy(item.sql)}>
+                <Copy size={14} />
+                复制
               </button>
               <button className="ghost-button danger-text" onClick={() => onUpdate(history.filter((current) => current.id !== item.id))}>
                 <Trash2 size={14} />
@@ -544,14 +525,14 @@ function TemplatesTab({
   activeSkill,
   onRefreshContext,
   onUpdate,
-  onInsert
+  onUseTemplate
 }: {
   templates: SqlTemplate[];
   context: EditorContext;
   activeSkill: DbSkill | null;
   onRefreshContext: () => Promise<void>;
   onUpdate: (templates: SqlTemplate[]) => Promise<void>;
-  onInsert: (sql: string) => Promise<void>;
+  onUseTemplate: (sql: string) => Promise<void>;
 }) {
   const [name, setName] = useState("");
   const [draftSql, setDraftSql] = useState("");
@@ -664,9 +645,9 @@ function TemplatesTab({
             </div>
             <pre className="code-block">{renderedSql}</pre>
             <div className="row">
-              <button className="primary-button" onClick={() => onInsert(renderedSql)}>
-                <Play size={15} />
-                生成并插入
+              <button className="primary-button" onClick={() => onUseTemplate(renderedSql)}>
+                <Copy size={15} />
+                复制 SQL
               </button>
               <button className="ghost-button danger-text" onClick={() => onUpdate(templates.filter((template) => template.id !== selectedTemplate.id))}>
                 <Trash2 size={14} />
@@ -798,12 +779,6 @@ function SettingsTab({ config, onSave }: { config: ModelConfig; onSave: (config:
 
 function renderTemplate(sql: string, values: Record<string, string>) {
   return sql.replace(/\{\{(\w+)\}\}/g, (_, name: string) => values[name] ?? `{{${name}}}`);
-}
-
-function appendSql(currentSql: string, nextSql: string): string {
-  if (!currentSql.trim()) return nextSql;
-  if (!nextSql.trim()) return currentSql;
-  return `${currentSql.trimEnd()}\n\n${nextSql.trimStart()}`;
 }
 
 async function sendRuntime<T>(message: unknown): Promise<T> {

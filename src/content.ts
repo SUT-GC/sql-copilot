@@ -78,65 +78,6 @@ function getSelectionText(target: EditorTarget | null): string {
   return window.getSelection()?.toString() ?? "";
 }
 
-function insertAtCursor(text: string): boolean {
-  const target = findEditor();
-  if (!target) return false;
-  const { element } = target;
-  element.focus();
-  if (isTextControl(element)) {
-    if (target.adapter === "monaco-dom" || target.adapter === "ace-dom") {
-      return setEditorSql(appendSql(getSql(target), text));
-    }
-    const start = element.selectionStart ?? element.value.length;
-    const end = element.selectionEnd ?? element.value.length;
-    element.value = `${element.value.slice(0, start)}${text}${element.value.slice(end)}`;
-    const nextPosition = start + text.length;
-    element.setSelectionRange(nextPosition, nextPosition);
-    dispatchInput(element);
-    return true;
-  }
-  return document.execCommand("insertText", false, text) || setEditorSql(appendSql(getSql(target), text));
-}
-
-function replaceSelection(text: string): boolean {
-  const target = findEditor();
-  if (!target) return false;
-  const { element } = target;
-  element.focus();
-  if (isTextControl(element)) {
-    const start = element.selectionStart ?? 0;
-    const end = element.selectionEnd ?? element.value.length;
-    if (start === end) return insertAtCursor(text);
-    element.value = `${element.value.slice(0, start)}${text}${element.value.slice(end)}`;
-    element.setSelectionRange(start, start + text.length);
-    dispatchInput(element);
-    return true;
-  }
-  return document.execCommand("insertText", false, text);
-}
-
-function setEditorSql(text: string): boolean {
-  const target = findEditor();
-  if (!target) return false;
-  const { element } = target;
-  element.focus();
-  if (isTextControl(element)) {
-    element.value = text;
-    element.setSelectionRange(text.length, text.length);
-    dispatchInput(element);
-    return true;
-  }
-  element.textContent = text;
-  dispatchInput(element);
-  return true;
-}
-
-function appendSql(currentSql: string, nextSql: string): string {
-  if (!currentSql.trim()) return nextSql;
-  if (!nextSql.trim()) return currentSql;
-  return `${currentSql.trimEnd()}\n\n${nextSql.trimStart()}`;
-}
-
 function isTextControl(element: HTMLElement): element is HTMLTextAreaElement | HTMLInputElement {
   const tag = element.tagName.toLowerCase();
   return tag === "textarea" || tag === "input";
@@ -600,18 +541,6 @@ function registerMessageListener(): void {
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === "getEditorContext") {
       sendResponse({ ok: true, result: getContext() });
-      return true;
-    }
-    if (message?.type === "insertSql") {
-      sendResponse({ ok: insertAtCursor(message.sql ?? "") });
-      return true;
-    }
-    if (message?.type === "replaceSelection") {
-      sendResponse({ ok: replaceSelection(message.sql ?? "") });
-      return true;
-    }
-    if (message?.type === "setEditorSql") {
-      sendResponse({ ok: setEditorSql(message.sql ?? "") });
       return true;
     }
     return false;
