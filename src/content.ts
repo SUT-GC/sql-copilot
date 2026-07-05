@@ -217,7 +217,7 @@ function updateCompletion(element: HTMLTextAreaElement | HTMLInputElement): void
   }
 
   const start = cursor - token.length;
-  const context = inferCompletionContext(beforeCursor.slice(0, start));
+  const context = inferCompletionContext(getCompletionPrefix(element, beforeCursor.slice(0, start), token));
   const items = completionItems
     .filter((item) => isAllowedInContext(item, context))
     .filter((item) => {
@@ -241,6 +241,41 @@ function updateCompletion(element: HTMLTextAreaElement | HTMLInputElement): void
     selectedIndex: 0
   };
   renderCompletion();
+}
+
+function getCompletionPrefix(element: HTMLElement, typedPrefix: string, token: string): string {
+  if (inferCompletionContext(typedPrefix) !== "any") return typedPrefix;
+
+  const visibleText = getVisibleEditorText(element);
+  if (!visibleText) return typedPrefix;
+
+  const tokenIndex = visibleText.toLowerCase().lastIndexOf(token.toLowerCase());
+  return tokenIndex >= 0 ? visibleText.slice(0, tokenIndex) : visibleText;
+}
+
+function getVisibleEditorText(element: HTMLElement): string {
+  const monaco = element.closest(".monaco-editor");
+  if (monaco) {
+    return Array.from(monaco.querySelectorAll<HTMLElement>(".view-line"))
+      .map((line) => line.textContent ?? "")
+      .join("\n");
+  }
+
+  const codeMirror = element.closest(".cm-editor");
+  if (codeMirror) {
+    return Array.from(codeMirror.querySelectorAll<HTMLElement>(".cm-line"))
+      .map((line) => line.textContent ?? "")
+      .join("\n");
+  }
+
+  const ace = element.closest(".ace_editor");
+  if (ace) {
+    return Array.from(ace.querySelectorAll<HTMLElement>(".ace_line"))
+      .map((line) => line.textContent ?? "")
+      .join("\n");
+  }
+
+  return "";
 }
 
 function inferCompletionContext(sqlBeforeToken: string): CompletionContext {
