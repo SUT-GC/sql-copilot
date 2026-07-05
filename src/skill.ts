@@ -18,7 +18,7 @@ export function parseDbSkill(input: string, fallbackName = "DB Skill"): DbSkill 
 }
 
 function parseJsonSkill(input: string, fallbackName: string): DbSkill {
-  const parsed = JSON.parse(input) as Partial<DbSkill> & {
+  const parsed = parseJsonObject(input) as Partial<DbSkill> & {
     dialect?: SqlDialect;
     tables?: DbTable[];
     metrics?: DbMetric[];
@@ -35,6 +35,18 @@ function parseJsonSkill(input: string, fallbackName: string): DbSkill {
     joins: parsed.joins ?? [],
     updatedAt: new Date().toISOString()
   };
+}
+
+function parseJsonObject(input: string): unknown {
+  try {
+    return JSON.parse(input);
+  } catch (error) {
+    const lastBrace = input.lastIndexOf("}");
+    if (lastBrace > 0) {
+      return JSON.parse(input.slice(0, lastBrace + 1));
+    }
+    throw error;
+  }
 }
 
 function parseMarkdownSkill(input: string, fallbackName: string): DbSkill {
@@ -247,7 +259,7 @@ export function getSkillSuggestions(skill: DbSkill | null, query: string, databa
 export function filterTablesByDatabase(tables: DbTable[], database: string | null): DbTable[] {
   if (!database) return tables;
   const normalized = normalizeName(database);
-  return tables.filter((table) => !table.database || normalizeName(table.database) === normalized);
+  return tables.filter((table) => !table.database || splitDatabaseNames(table.database).includes(normalized));
 }
 
 function extractExplicitTables(sql: string, skill: DbSkill): Set<string> {
@@ -375,6 +387,10 @@ function tokenize(value: string): string[] {
 
 function normalizeName(value: string): string {
   return value.replace(/^[`"[]|[`"\]]$/g, "").toLowerCase().trim();
+}
+
+function splitDatabaseNames(value: string): string[] {
+  return value.split(",").map(normalizeName).filter(Boolean);
 }
 
 function escapeRegExp(value: string): string {

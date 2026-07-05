@@ -439,11 +439,15 @@ function getContext(): EditorContext {
 function filterTablesByDatabase(tables: DbSkill["tables"], database: string | null): DbSkill["tables"] {
   if (!database) return tables;
   const normalized = normalizeName(database);
-  return tables.filter((table) => !table.database || normalizeName(table.database) === normalized);
+  return tables.filter((table) => !table.database || splitDatabaseNames(table.database).includes(normalized));
 }
 
 function normalizeName(value: string): string {
   return value.toLowerCase().trim();
+}
+
+function splitDatabaseNames(value: string): string[] {
+  return value.split(",").map(normalizeName).filter(Boolean);
 }
 
 function inferDatabaseFromUrlForPage(url: string, rules: UrlScopeRule[] = []): string | null {

@@ -1,5 +1,5 @@
 import type { DbSkill } from "../src/types";
-import { retrieveRelevantSkill, skillToPrompt } from "../src/skill";
+import { filterTablesByDatabase, parseDbSkill, retrieveRelevantSkill, skillToPrompt } from "../src/skill";
 import { inferDatabaseFromUrl } from "../src/scope";
 
 const skill: DbSkill = {
@@ -24,7 +24,7 @@ const skill: DbSkill = {
       columns: [{ name: "user_id", type: "bigint", description: "用户 ID" }]
     },
     {
-      database: "other_db",
+      database: "other_db, life_opact",
       name: "events",
       description: "事件表",
       columns: [{ name: "event_name", type: "varchar", description: "事件名" }]
@@ -42,6 +42,9 @@ const skill: DbSkill = {
 
 const inferredDb = inferDatabaseFromUrl("https://cloud.bytedance.net/rds/detail/db/global/life_opact/autoSQL");
 assertEqual(inferredDb, "life_opact", "ByteDance RDS URL database inference");
+const parsedWithTail = parseDbSkill(`${JSON.stringify({ name: "tail_test", tables: [] })}\nDB`, "fallback");
+assertEqual(parsedWithTail.name, "tail_test", "parser should tolerate accidental trailing text after JSON");
+assert(filterTablesByDatabase(skill.tables, "life_opact").some((table) => table.name === "events"), "multi database string should match a single scoped database");
 
 const explicit = retrieveRelevantSkill(skill, {
   currentSql: "select pay_amount from orders where",
@@ -61,7 +64,7 @@ const fuzzy = retrieveRelevantSkill(skill, {
 });
 assert(fuzzy.skill?.tables.some((table) => table.name === "orders"), "fuzzy retrieval should include orders");
 assert((fuzzy.skill?.tables.length ?? 0) < skill.tables.length, "fuzzy retrieval should reduce table count when possible");
-assert(!fuzzy.skill?.tables.some((table) => table.database === "other_db"), "database scope should exclude other_db tables");
+assert(!fuzzy.skill?.tables.some((table) => table.database === "other_db"), "database scope should exclude pure other_db tables");
 
 console.log("retrieval checks passed");
 
