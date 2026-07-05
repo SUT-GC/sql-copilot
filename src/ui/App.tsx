@@ -121,9 +121,16 @@ export function App({ initialTab = "ask" }: AppProps) {
   }
 
   async function insertSql(sql: string, mode: InsertMode = "insert") {
-    const type = mode === "selection" ? "replaceSelection" : mode === "replace" || mode === "set" ? "setEditorSql" : "insertSql";
+    if (mode === "insert") {
+      const current = await sendToActiveTab<EditorContext>({ type: "getEditorContext" });
+      await sendToActiveTab({ type: "setEditorSql", sql: appendSql(current.sql, sql) });
+      setStatus("已追加到编辑器 SQL");
+      refreshEditorContext();
+      return;
+    }
+    const type = mode === "selection" ? "replaceSelection" : "setEditorSql";
     await sendToActiveTab({ type, sql });
-    setStatus(mode === "selection" ? "已替换选中 SQL" : mode === "replace" || mode === "set" ? "已替换编辑器 SQL" : "已插入 SQL");
+    setStatus(mode === "selection" ? "已替换选中 SQL" : "已替换编辑器 SQL");
     refreshEditorContext();
   }
 
@@ -791,6 +798,12 @@ function SettingsTab({ config, onSave }: { config: ModelConfig; onSave: (config:
 
 function renderTemplate(sql: string, values: Record<string, string>) {
   return sql.replace(/\{\{(\w+)\}\}/g, (_, name: string) => values[name] ?? `{{${name}}}`);
+}
+
+function appendSql(currentSql: string, nextSql: string): string {
+  if (!currentSql.trim()) return nextSql;
+  if (!nextSql.trim()) return currentSql;
+  return `${currentSql.trimEnd()}\n\n${nextSql.trimStart()}`;
 }
 
 async function sendRuntime<T>(message: unknown): Promise<T> {

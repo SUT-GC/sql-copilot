@@ -84,6 +84,9 @@ function insertAtCursor(text: string): boolean {
   const { element } = target;
   element.focus();
   if (isTextControl(element)) {
+    if (target.adapter === "monaco-dom" || target.adapter === "ace-dom") {
+      return setEditorSql(appendSql(getSql(target), text));
+    }
     const start = element.selectionStart ?? element.value.length;
     const end = element.selectionEnd ?? element.value.length;
     element.value = `${element.value.slice(0, start)}${text}${element.value.slice(end)}`;
@@ -92,7 +95,7 @@ function insertAtCursor(text: string): boolean {
     dispatchInput(element);
     return true;
   }
-  return document.execCommand("insertText", false, text);
+  return document.execCommand("insertText", false, text) || setEditorSql(appendSql(getSql(target), text));
 }
 
 function replaceSelection(text: string): boolean {
@@ -126,6 +129,12 @@ function setEditorSql(text: string): boolean {
   element.textContent = text;
   dispatchInput(element);
   return true;
+}
+
+function appendSql(currentSql: string, nextSql: string): string {
+  if (!currentSql.trim()) return nextSql;
+  if (!nextSql.trim()) return currentSql;
+  return `${currentSql.trimEnd()}\n\n${nextSql.trimStart()}`;
 }
 
 function isTextControl(element: HTMLElement): element is HTMLTextAreaElement | HTMLInputElement {
