@@ -54,6 +54,15 @@ DEEPSEEK_API_KEY=sk-xxx npm run verify:e2e
 - SQL 模板是否能保存和渲染。
 - 配置 API Key 时，Ask 是否能调用 DeepSeek 生成 SQL，并写入历史。
 
+## 表多时的检索策略
+
+Ask 和 Complete 在调用模型前会先裁剪 DB Skill：
+
+- 如果当前 SQL 里已经出现 `from 表名` 或 `join 表名`，只把这些显式表传给模型，不再检索其他表。
+- 如果当前 SQL 还没有表名，会根据用户问题、当前 SQL、字段说明、指标说明检索相关表。
+- 传给模型的上下文只包含检索后的 tables、joins、metrics，不会把原始大 JSON 全量塞进 prompt。
+- 页面内联想补全仍然使用当前激活 Skill 的本地索引，保证输入表名/字段名时响应足够快。
+
 说明：新版正式版 Chrome 已限制命令行加载未打包扩展，自动化验证默认使用 Playwright 下载的 Chrome for Testing。日常手动使用时仍然可以在 `chrome://extensions` 开发者模式中加载 `dist`。
 
 ## MVP 使用路径

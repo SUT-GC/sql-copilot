@@ -8,6 +8,7 @@
     "demo": "node demo/server.js",
     "demo:mysql": "docker compose up -d mysql",
     "build": "tsc && vite build",
+    "verify:retrieval": "tsx scripts/verify-retrieval.ts",
     "verify:e2e": "node scripts/verify-e2e.mjs",
     "preview": "vite preview --host 127.0.0.1"
   },
@@ -25,6 +26,7 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "playwright": "^1.61.1",
+    "tsx": "^4.23.0",
     "typescript": "^5.7.2"
   }
 }

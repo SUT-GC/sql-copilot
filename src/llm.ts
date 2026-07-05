@@ -1,5 +1,5 @@
 import type { GenerateSqlRequest, GenerateSqlResponse } from "./types";
-import { skillToPrompt } from "./skill";
+import { retrieveRelevantSkill, skillToPrompt } from "./skill";
 
 type ChatCompletionResponse = {
   choices?: Array<{
@@ -56,7 +56,12 @@ export async function generateSql(request: GenerateSqlRequest): Promise<Generate
 }
 
 function buildUserPrompt(request: GenerateSqlRequest): string {
-  const skill = skillToPrompt(request.skill);
+  const retrieval = retrieveRelevantSkill(request.skill, {
+    prompt: request.prompt,
+    currentSql: request.currentSql,
+    selection: request.selection
+  });
+  const skill = skillToPrompt(retrieval.skill, retrieval.reason);
   if (request.mode === "complete") {
     return [
       "请根据当前 SQL 上下文做续写/补全。",

@@ -1,6 +1,9 @@
 import type { DbColumn, DbJoin, DbMetric, DbSkill, DbTable, SqlDialect } from "./types";
 import { createId } from "./storage";
 
+const MAX_RETRIEVED_TABLES = 20;
+const MAX_RETRIEVED_METRICS = 20;
+
 export function parseDbSkill(input: string, fallbackName = "DB Skill"): DbSkill {
   const trimmed = input.trim();
   if (!trimmed) {
@@ -130,7 +133,39 @@ function stripTicks(value: string): string {
   return value.replace(/^`|`$/g, "").trim();
 }
 
-export function skillToPrompt(skill: DbSkill | null | undefined): string {
+export function retrieveRelevantSkill(
+  skill: DbSkill | null | undefined,
+  input: { prompt?: string; currentSql?: string; selection?: string }
+): { skill: DbSkill | null; reason: string } {
+  if (!skill) return { skill: null, reason: "未提供 DB Skill" };
+
+  const explicitTableNames = extractExplicitTables(input.currentSql ?? "", skill);
+  if (explicitTableNames.size > 0) {
+    const tables = skill.tables.filter((table) => explicitTableNames.has(normalizeName(table.name)));
+    return {
+      skill: cloneSkillSubset(skill, tables, filterJoins(skill.joins, tables, "both"), filterMetrics(skill.metrics, tables, input)),
+      reason: `当前 SQL 已显式输入表：${tables.map((table) => table.name).join(", ")}，仅使用这些表做上下文。`
+    };
+  }
+
+  const searchText = [input.prompt, input.currentSql, input.selection].filter(Boolean).join("\n");
+  const scoredTables = skill.tables
+    .map((table) => ({ table, score: scoreTable(table, searchText) }))
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, MAX_RETRIEVED_TABLES)
+    .map((item) => item.table);
+
+  const tables = scoredTables.length ? scoredTables : skill.tables.slice(0, Math.min(skill.tables.length, 8));
+  return {
+    skill: cloneSkillSubset(skill, tables, filterJoins(skill.joins, tables, "any"), filterMetrics(skill.metrics, tables, input)),
+    reason: scoredTables.length
+      ? `按用户输入检索出相关表：${tables.map((table) => table.name).join(", ")}。`
+      : `没有明显表匹配，使用前 ${tables.length} 张表作为候选上下文。`
+  };
+}
+
+export function skillToPrompt(skill: DbSkill | null | undefined, retrievalReason?: string): string {
   if (!skill) return "未提供 DB Skill。缺少表字段信息时必须向用户说明，不要编造字段。";
   const tables = skill.tables
     .map((table) => {
@@ -147,15 +182,16 @@ export function skillToPrompt(skill: DbSkill | null | undefined): string {
 
   return [
     `DB Skill 名称：${skill.name}`,
+    retrievalReason ? `检索说明：${retrievalReason}` : "",
     "## Tables",
     tables || "无",
     "## Metrics",
     metrics || "无",
     "## Joins",
-    joins || "无",
-    "## Raw Notes",
-    skill.raw.slice(0, 12000)
-  ].join("\n");
+    joins || "无"
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 export function getSkillSuggestions(skill: DbSkill | null, query: string): Array<{ label: string; detail: string; insertText: string }> {
@@ -190,3 +226,150 @@ export function getSkillSuggestions(skill: DbSkill | null, query: string): Array
     .filter((item) => !needle || `${item.label} ${item.detail}`.toLowerCase().includes(needle))
     .slice(0, 40);
 }
+
+function extractExplicitTables(sql: string, skill: DbSkill): Set<string> {
+  const result = new Set<string>();
+  if (!sql.trim()) return result;
+  const normalizedTableNames = new Map(skill.tables.map((table) => [normalizeName(table.name), table.name]));
+  const escapedNames = Array.from(normalizedTableNames.keys()).sort((a, b) => b.length - a.length).map(escapeRegExp);
+
+  const relationPattern = /\b(?:from|join|update|into)\s+([`"[]?[\w.-]+[`"\]]?)/gi;
+  for (const match of sql.matchAll(relationPattern)) {
+    const tableName = normalizeName(match[1]);
+    const direct = normalizedTableNames.get(tableName);
+    if (direct) result.add(normalizeName(direct));
+    const shortName = tableName.split(".").pop() ?? tableName;
+    const shortMatch = skill.tables.find((table) => normalizeName(table.name).split(".").pop() === shortName);
+    if (shortMatch) result.add(normalizeName(shortMatch.name));
+  }
+
+  if (result.size === 0 && escapedNames.length) {
+    const namePattern = new RegExp(`\\b(${escapedNames.join("|")})\\b`, "gi");
+    for (const match of sql.matchAll(namePattern)) {
+      result.add(normalizeName(match[1]));
+    }
+  }
+
+  return result;
+}
+
+function cloneSkillSubset(skill: DbSkill, tables: DbTable[], joins: DbJoin[], metrics: DbMetric[]): DbSkill {
+  return {
+    ...skill,
+    raw: "",
+    tables,
+    joins,
+    metrics
+  };
+}
+
+function filterJoins(joins: DbJoin[], tables: DbTable[], mode: "any" | "both"): DbJoin[] {
+  const tableNames = new Set(tables.map((table) => normalizeName(table.name)));
+  return joins.filter((join) => {
+    const left = normalizeName(join.left).split(".").slice(0, -1).join(".");
+    const right = normalizeName(join.right).split(".").slice(0, -1).join(".");
+    const leftMatches = tableNames.has(left) || tableNames.has(left.split(".").pop() ?? left);
+    const rightMatches = tableNames.has(right) || tableNames.has(right.split(".").pop() ?? right);
+    return mode === "both" ? leftMatches && rightMatches : leftMatches || rightMatches;
+  });
+}
+
+function filterMetrics(metrics: DbMetric[], tables: DbTable[], input: { prompt?: string; currentSql?: string; selection?: string }): DbMetric[] {
+  const searchText = [input.prompt, input.currentSql, input.selection].filter(Boolean).join(" ").toLowerCase();
+  const tableTerms = new Set<string>();
+  for (const table of tables) {
+    tableTerms.add(normalizeName(table.name));
+    for (const column of table.columns ?? []) {
+      tableTerms.add(normalizeName(column.name));
+    }
+  }
+
+  return metrics
+    .map((metric) => ({ metric, score: scoreMetric(metric, searchText, tableTerms) }))
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, MAX_RETRIEVED_METRICS)
+    .map((item) => item.metric);
+}
+
+function scoreTable(table: DbTable, searchText: string): number {
+  const lowerSearchText = searchText.toLowerCase();
+  const haystack = [
+    table.name,
+    table.description,
+    ...(table.columns ?? []).flatMap((column) => [column.name, column.type, column.description])
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  const tokens = tokenize(searchText);
+  let score = 0;
+  if (lowerSearchText.includes(normalizeName(table.name))) score += 12;
+  if (table.description && lowerSearchText.includes(table.description.toLowerCase())) score += 6;
+  for (const column of table.columns ?? []) {
+    if (lowerSearchText.includes(normalizeName(column.name))) score += 10;
+    if (column.description && lowerSearchText.includes(column.description.toLowerCase())) score += 6;
+  }
+  for (const token of tokens) {
+    if (normalizeName(table.name).includes(token)) score += 8;
+    if (haystack.includes(token)) score += 2;
+    for (const column of table.columns ?? []) {
+      if (normalizeName(column.name).includes(token)) score += 4;
+    }
+  }
+  return score;
+}
+
+function scoreMetric(metric: DbMetric, searchText: string, tableTerms: Set<string>): number {
+  const lowerSearchText = searchText.toLowerCase();
+  const haystack = [metric.name, metric.expression, metric.filters, metric.description].filter(Boolean).join(" ").toLowerCase();
+  let score = 0;
+  if (lowerSearchText.includes(normalizeName(metric.name))) score += 8;
+  if (metric.description && lowerSearchText.includes(metric.description.toLowerCase())) score += 4;
+  for (const token of tokenize(searchText)) {
+    if (normalizeName(metric.name).includes(token)) score += 6;
+    if (haystack.includes(token)) score += 2;
+  }
+  for (const term of tableTerms) {
+    if (term && haystack.includes(term)) score += 1;
+  }
+  return score;
+}
+
+function tokenize(value: string): string[] {
+  return Array.from(new Set(value.toLowerCase().match(/[\p{L}\p{N}_$.]+/gu) ?? []))
+    .map(normalizeName)
+    .filter((token) => token.length >= 2 && !SQL_STOP_WORDS.has(token));
+}
+
+function normalizeName(value: string): string {
+  return value.replace(/^[`"[]|[`"\]]$/g, "").toLowerCase().trim();
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+const SQL_STOP_WORDS = new Set([
+  "select",
+  "from",
+  "where",
+  "join",
+  "left",
+  "right",
+  "inner",
+  "outer",
+  "group",
+  "order",
+  "by",
+  "and",
+  "or",
+  "as",
+  "on",
+  "limit",
+  "count",
+  "sum",
+  "avg",
+  "max",
+  "min"
+]);
